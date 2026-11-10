@@ -55,7 +55,7 @@ export class AmazonProvider extends BaseProvider {
       const $ = cheerio.load(html);
       const candidates = [];
 
-      $('h3 a').each((_, el) => {
+      $('.compTitle a, h3 a, #web a[href*="/RU="]').each((_, el) => {
         const $link = $(el);
         const rawHref = $link.attr('href');
         if (!rawHref) return;

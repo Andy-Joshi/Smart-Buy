@@ -55,7 +55,7 @@ export class YahooPublicProvider extends BaseProvider {
       const $ = cheerio.load(html);
       const listings = [];
 
-      $('h3 a').each((_, el) => {
+      $('.compTitle a, h3 a, #web a[href*="/RU="]').each((_, el) => {
         const $link = $(el);
         const rawHref = $link.attr('href');
         
