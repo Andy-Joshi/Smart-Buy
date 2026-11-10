@@ -59,6 +59,41 @@ app.use(rateLimiter);
 /**
  * GET /api/health
  */
+app.get('/api/debug/fetch', async (req, res) => {
+  const targetUrl = req.query.url;
+  if (!targetUrl) return res.status(400).json({ error: 'Missing url parameter' });
+  try {
+    const fetchRes = await fetch(targetUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
+      },
+    });
+    const text = await fetchRes.text();
+    const cheerio = await import('cheerio');
+    const $ = cheerio.load(text);
+    const links = [];
+    $('h3 a, a').each((_, el) => {
+      const h = $(el).attr('href');
+      if (h && (h.includes('amazon') || h.includes('croma') || h.includes('/RU='))) {
+        links.push(h);
+      }
+    });
+    res.json({
+      status: fetchRes.status,
+      contentType: fetchRes.headers.get('content-type'),
+      title: $('title').text(),
+      bodySnippet: $('body').text().slice(0, 300),
+      links: links.slice(0, 10),
+      htmlLength: text.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/health', (req, res) => {
   const providersHealth = providerRegistry.getHealthSummary();
   res.json({
