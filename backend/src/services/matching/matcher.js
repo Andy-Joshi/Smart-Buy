@@ -25,6 +25,23 @@ export function areCategoriesCompatible(catA, catB) {
   return false;
 }
 
+export function areModelsCompatible(tModel, cModel) {
+  if (!tModel || !cModel) return false;
+  const normT = tModel.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+  const normC = cModel.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+  if (normT === normC) return true;
+
+  // Extract all digit sequences - numbers must match exactly (e.g. Flip 6 vs Flip 7 must not match)
+  const tNums = tModel.match(/\d+/g) || [];
+  const cNums = cModel.match(/\d+/g) || [];
+  if (tNums.join(',') !== cNums.join(',')) return false;
+
+  // Check if one contains the other without digit conflict (e.g. "GALAXY Z FLIP 6" vs "Z FLIP 6")
+  if (normT.includes(normC) || normC.includes(normT)) return true;
+
+  return false;
+}
+
 /**
  * Tokenize string into meaningful alphanumeric tokens.
  */
@@ -111,12 +128,7 @@ export function evaluateProductMatch(targetIdentity, candidate) {
 
   // 4. Model check
   if (targetIdentity.model && candidateIdentity.model) {
-    const tModel = targetIdentity.model.toUpperCase();
-    const cModel = candidateIdentity.model.toUpperCase();
-
-    if (tModel !== cModel) {
-      // Check if one is a strict superset or equivalent, otherwise reject
-      // e.g. WH-CH720N vs WH-CH520
+    if (!areModelsCompatible(targetIdentity.model, candidateIdentity.model)) {
       return {
         status: MATCH_STATUS.REJECTED,
         confidence: 0.1,
@@ -125,10 +137,11 @@ export function evaluateProductMatch(targetIdentity, candidate) {
       };
     }
   } else if (targetIdentity.model && !candidateIdentity.model) {
-    // If target has an explicit model code (e.g. WH-CH720N), candidate must mention it
+    // If target has an explicit model code (e.g. WH-CH720N or GALAXY Z FLIP 6), candidate must mention it
     const tModel = targetIdentity.model.toUpperCase();
-    const candidateUpper = candidateRawTitle.toUpperCase();
-    if (!candidateUpper.includes(tModel)) {
+    const normT = tModel.replace(/[^A-Z0-9]/gi, '');
+    const normCandidate = candidateRawTitle.toUpperCase().replace(/[^A-Z0-9]/gi, '');
+    if (!candidateRawTitle.toUpperCase().includes(tModel) && !normCandidate.includes(normT)) {
       return {
         status: MATCH_STATUS.REJECTED,
         confidence: 0.2,
@@ -185,7 +198,7 @@ export function evaluateProductMatch(targetIdentity, candidate) {
 
   // Boost for exact model match (requires both sides to have a model)
   const hasExactModelMatch =
-    targetHasModel && candidateHasModel && targetIdentity.model === candidateIdentity.model;
+    targetHasModel && candidateHasModel && areModelsCompatible(targetIdentity.model, candidateIdentity.model);
 
   if (hasExactModelMatch) {
     score = Math.max(score, 0.85);

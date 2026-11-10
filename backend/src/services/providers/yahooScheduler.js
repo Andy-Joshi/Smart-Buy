@@ -13,7 +13,23 @@ export function scheduleYahooRequest(fn, delayMs = 280) {
     if (delayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
-    return fn();
+    let lastErr;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastErr = err;
+        const isTransient =
+          err.message && (err.message.includes('500') || err.message.includes('429'));
+        if (isTransient && attempt < 2) {
+          const waitTime = (attempt + 1) * 500;
+          await new Promise((resolve) => setTimeout(resolve, waitTime));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr;
   });
 
   // Keep queue moving even if a request rejects
