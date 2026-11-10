@@ -19,7 +19,7 @@ export class CromaProvider extends BaseProvider {
     const { timeoutMs = 8000 } = options;
 
     try {
-      const searchTerms = `site:croma.com ${query} price`;
+      const searchTerms = `${query} croma price India`;
       const encodedQuery = encodeURIComponent(searchTerms);
 
       const html = await scheduleYahooRequest(async () => {
@@ -86,11 +86,22 @@ export class CromaProvider extends BaseProvider {
         const $container = $link.closest('li');
         const snippet = $container.find('.compText, .lh-16').text().trim();
 
-        // Check if it is a Croma product page (contains /p/)
-        if (targetUrl.includes('croma.com/') && targetUrl.includes('/p/')) {
+        const isNotProduct =
+          targetUrl.includes('/c/') ||
+          targetUrl.includes('/search') ||
+          targetUrl.includes('/help') ||
+          targetUrl.includes('/offers');
+
+        // Check if it is a Croma product page
+        if (targetUrl.includes('croma.com/') && !isNotProduct) {
           // If title is generic, extract from URL slug
-          if (!rawTitle || rawTitle.toLowerCase() === 'croma' || rawTitle.toLowerCase().startsWith('online shopping') || rawTitle.length < 8) {
-            const slugMatch = targetUrl.match(/croma\.com\/([^/]+)\/p\//i);
+          if (
+            !rawTitle ||
+            rawTitle.toLowerCase() === 'croma' ||
+            rawTitle.toLowerCase().startsWith('online shopping') ||
+            rawTitle.length < 8
+          ) {
+            const slugMatch = targetUrl.match(/croma\.com\/([^/]+?)(?:\/p\/|\/|$)/i);
             if (slugMatch) {
               rawTitle = decodeURIComponent(slugMatch[1]).replace(/[-_]/g, ' ').trim();
             }

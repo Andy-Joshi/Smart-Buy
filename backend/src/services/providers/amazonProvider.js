@@ -19,7 +19,7 @@ export class AmazonProvider extends BaseProvider {
     const { timeoutMs = 8000 } = options;
 
     try {
-      const searchTerms = `site:amazon.in ${query} price`;
+      const searchTerms = `${query} amazon price India`;
       const encodedQuery = encodeURIComponent(searchTerms);
 
       const html = await scheduleYahooRequest(async () => {
@@ -86,10 +86,16 @@ export class AmazonProvider extends BaseProvider {
         const $container = $link.closest('li');
         const snippet = $container.find('.compText, .lh-16').text().trim();
 
-        if (targetUrl.includes('amazon.in/') && (targetUrl.includes('/dp/') || targetUrl.includes('/gp/product/'))) {
+        const isNotProduct =
+          targetUrl.includes('/s?') ||
+          targetUrl.includes('/b?') ||
+          targetUrl.includes('/help/') ||
+          targetUrl.includes('/gp/help/');
+
+        if (targetUrl.includes('amazon.in/') && !isNotProduct) {
           // If title is generic (e.g. "Amazon" or very short), recover from URL slug
           if (!rawTitle || rawTitle.toLowerCase() === 'amazon' || rawTitle.length < 8) {
-            const slugMatch = targetUrl.match(/amazon\.in\/([^/]+)\/dp\//i);
+            const slugMatch = targetUrl.match(/amazon\.in\/([^/]+?)(?:\/dp\/|\/|$)/i);
             if (slugMatch) {
               rawTitle = decodeURIComponent(slugMatch[1]).replace(/[-_]/g, ' ').trim();
             }
@@ -106,24 +112,38 @@ export class AmazonProvider extends BaseProvider {
         const match = (item.snippet + ' ' + item.rawTitle).match(/(?:₹|Rs\.?)\s*([0-9,]+(?:\.\d{2})?)/i);
         if (match) price = parsePrice(match[1]);
 
-        const identity = parseProductIdentity(item.rawTitle);
-        listings.push(
-          createProductListing({
-            title: item.rawTitle,
-            brand: identity.brand,
-            model: identity.model,
-            variant: identity.storage || identity.ram || null,
-            price,
-            currency: 'INR',
-            retailer: 'Amazon India',
-            url: item.href,
-            verificationStatus: VERIFICATION_STATUS.UNVERIFIED_SNIPPET,
-            source: 'amazon-discovery',
-            extractionNotes: price
-              ? `Discovered on Amazon India; price extracted from search snippet (${price})`
-              : 'Discovered on Amazon India (Direct page verification restricted by Amazon anti-bot)',
-          })
-        );
+        let pageListing = null;
+        if (!price && item.href && listings.length === 0) {
+          try {
+            const pageRes = await fetchAndExtractProduct(item.href, { timeoutMs: 3500 });
+            if (pageRes.success && pageRes.listing && pageRes.listing.price) {
+              pageListing = pageRes.listing;
+            }
+          } catch (_e) {}
+        }
+
+        if (pageListing) {
+          listings.push(pageListing);
+        } else {
+          const identity = parseProductIdentity(item.rawTitle);
+          listings.push(
+            createProductListing({
+              title: item.rawTitle,
+              brand: identity.brand,
+              model: identity.model,
+              variant: identity.storage || identity.ram || null,
+              price,
+              currency: 'INR',
+              retailer: 'Amazon India',
+              url: item.href,
+              verificationStatus: VERIFICATION_STATUS.UNVERIFIED_SNIPPET,
+              source: 'amazon-discovery',
+              extractionNotes: price
+                ? `Discovered on Amazon India; price extracted from search snippet (${price})`
+                : 'Discovered on Amazon India',
+            })
+          );
+        }
       }
 
       this.markSuccess();
