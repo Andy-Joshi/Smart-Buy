@@ -8,11 +8,11 @@ import { deduplicateListings } from '../matching/matcher.js';
 class ProviderRegistry {
   constructor() {
     this.providers = [
-      new YahooPublicProvider(),
-      new DuckDuckGoProvider(),
-      new CromaProvider(),
       new FlipkartProvider(),
       new AmazonProvider(),
+      new CromaProvider(),
+      new YahooPublicProvider(),
+      new DuckDuckGoProvider(),
     ];
   }
 
