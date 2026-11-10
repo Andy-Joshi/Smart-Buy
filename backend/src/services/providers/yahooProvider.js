@@ -19,7 +19,7 @@ export class YahooPublicProvider extends BaseProvider {
     const { timeoutMs = 8000 } = options;
 
     try {
-      const searchTerms = `${query} price India croma OR flipkart OR amazon OR reliancedigital`;
+      const searchTerms = `${query} buy online India`;
       const encodedQuery = encodeURIComponent(searchTerms);
 
       const html = await scheduleYahooRequest(async () => {

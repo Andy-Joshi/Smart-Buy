@@ -19,7 +19,7 @@ export class CromaProvider extends BaseProvider {
     const { timeoutMs = 8000 } = options;
 
     try {
-      const searchTerms = `${query} croma price India`;
+      const searchTerms = `${query} croma`;
       const encodedQuery = encodeURIComponent(searchTerms);
 
       const html = await scheduleYahooRequest(async () => {
@@ -90,7 +90,8 @@ export class CromaProvider extends BaseProvider {
           targetUrl.includes('/c/') ||
           targetUrl.includes('/search') ||
           targetUrl.includes('/help') ||
-          targetUrl.includes('/offers');
+          targetUrl.includes('/offers') ||
+          targetUrl.includes('/unboxed');
 
         // Check if it is a Croma product page
         if (targetUrl.includes('croma.com/') && !isNotProduct) {

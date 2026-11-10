@@ -126,37 +126,41 @@ class ProviderRegistry {
       return true;
     });
 
-    // For each alias, dispatch providers concurrently.
-    // scheduleYahooRequest ensures that Yahoo requests are safely staggered and never trigger HTTP 500.
+    // For each alias, dispatch providers with early satisfaction once multi-retailer variety is achieved.
     const aliasesToDispatch = uniqueAliases.slice(0, maxAliases);
-    const allRoundResults = await Promise.allSettled(
-      aliasesToDispatch.map((alias) => this.executeSearchAll(alias, { timeoutMs }))
-    );
-
-    // Merge providerStats: aggregate across rounds, summing resultsCounts, keeping worst status
     const providerStatsMap = new Map();
     const rawListings = [];
 
-    for (const round of allRoundResults) {
-      if (round.status !== 'fulfilled') continue;
-      const { allListings, providerStats } = round.value;
-      rawListings.push(...allListings);
+    for (let roundIdx = 0; roundIdx < aliasesToDispatch.length; roundIdx++) {
+      const alias = aliasesToDispatch[roundIdx];
+      // If round 0 already returned listings from 2 or more distinct retailers, response is complete
+      if (roundIdx > 0) {
+        const distinctRetailers = new Set(rawListings.map((l) => l.retailer).filter(Boolean));
+        if (distinctRetailers.size >= 2) {
+          break;
+        }
+      }
 
-      for (const stat of providerStats) {
-        const existing = providerStatsMap.get(stat.id);
-        if (!existing) {
-          providerStatsMap.set(stat.id, { ...stat });
-        } else {
-          // Accumulate result count; keep the worst status and last error
-          existing.resultsCount += stat.resultsCount;
-          existing.durationMs = Math.max(existing.durationMs, stat.durationMs);
-          if (stat.error) existing.error = stat.error;
-          // Upgrade status to reflect the best seen across rounds
-          const statusPriority = { Working: 3, 'Rate Limited': 2, Unavailable: 1 };
-          if ((statusPriority[stat.status] || 0) > (statusPriority[existing.status] || 0)) {
-            existing.status = stat.status;
+      try {
+        const roundRes = await this.executeSearchAll(alias, { timeoutMs });
+        rawListings.push(...roundRes.allListings);
+
+        for (const stat of roundRes.providerStats) {
+          const existing = providerStatsMap.get(stat.id);
+          if (!existing) {
+            providerStatsMap.set(stat.id, { ...stat });
+          } else {
+            existing.resultsCount += stat.resultsCount;
+            existing.durationMs = Math.max(existing.durationMs, stat.durationMs);
+            if (stat.error) existing.error = stat.error;
+            const statusPriority = { Working: 3, 'Rate Limited': 2, Unavailable: 1 };
+            if ((statusPriority[stat.status] || 0) > (statusPriority[existing.status] || 0)) {
+              existing.status = stat.status;
+            }
           }
         }
+      } catch (_err) {
+        // Continue to next alias
       }
     }
 

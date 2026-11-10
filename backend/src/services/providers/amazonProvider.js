@@ -19,7 +19,7 @@ export class AmazonProvider extends BaseProvider {
     const { timeoutMs = 8000 } = options;
 
     try {
-      const searchTerms = `${query} amazon price India`;
+      const searchTerms = `${query} amazon`;
       const encodedQuery = encodeURIComponent(searchTerms);
 
       const html = await scheduleYahooRequest(async () => {
