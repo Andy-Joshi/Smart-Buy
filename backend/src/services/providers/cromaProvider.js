@@ -5,6 +5,21 @@ import { createProductListing, parsePrice, VERIFICATION_STATUS } from '../extrac
 import { parseProductIdentity } from '../matching/normalizer.js';
 import { scheduleYahooRequest } from './yahooScheduler.js';
 
+function decodeBingUrl(href) {
+  if (!href) return null;
+  const match = href.match(/[?&]u=a1([^&]+)/);
+  if (match) {
+    let b64 = match[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    try {
+      return Buffer.from(b64, 'base64').toString('utf8');
+    } catch {
+      return null;
+    }
+  }
+  return href;
+}
+
 export class CromaProvider extends BaseProvider {
   constructor() {
     super({
@@ -19,100 +34,145 @@ export class CromaProvider extends BaseProvider {
     const { timeoutMs = 8000 } = options;
 
     try {
-      const searchTerms = `${query} croma`;
-      const encodedQuery = encodeURIComponent(searchTerms);
-
-      const html = await scheduleYahooRequest(async () => {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-        try {
-          const res = await fetch(`https://in.search.yahoo.com/search?p=${encodedQuery}`, {
-            headers: {
-              'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-              Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-              'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
-              'Sec-Fetch-Dest': 'document',
-              'Sec-Fetch-Mode': 'navigate',
-              'Sec-Fetch-Site': 'none',
-              'Sec-Fetch-User': '?1',
-              'Upgrade-Insecure-Requests': '1',
-            },
-            signal: controller.signal,
-          });
-
-          if (!res.ok) {
-            throw new Error(`Croma discovery query failed with HTTP ${res.status}`);
-          }
-
-          return await res.text();
-        } finally {
-          clearTimeout(timeout);
-        }
-      });
-
-      const $ = cheerio.load(html);
       const candidates = [];
 
-      $('.compTitle a, h3 a, #web a[href*="/RU="]').each((_, el) => {
-        const $link = $(el);
-        const rawHref = $link.attr('href');
-        if (!rawHref) return;
+      // 1. Primary discovery: Bing Search
+      try {
+        const bingController = new AbortController();
+        const bingTimeout = setTimeout(() => bingController.abort(), Math.min(timeoutMs, 3500));
+        const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(`${query} site:croma.com`)}&setlang=en-in&cc=IN`;
 
-        let rawTitle = $link.attr('aria-label')?.trim();
-        if (!rawTitle) {
-          const $clone = $link.clone();
-          $clone.find('span').remove();
-          rawTitle = $clone.text().trim();
-        }
-        if (!rawTitle) {
-          rawTitle = $link.text().trim();
-        }
+        const bingRes = await fetch(bingUrl, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-IN,en;q=0.9',
+          },
+          signal: bingController.signal,
+        });
+        clearTimeout(bingTimeout);
 
-        if (!rawTitle || rawTitle === 'Images' || rawTitle === 'Videos') return;
+        if (bingRes.ok) {
+          const bingHtml = await bingRes.text();
+          const $b = cheerio.load(bingHtml);
+          $b('li.b_algo, .b_algo').each((_, el) => {
+            const $a = $b(el).find('h2 a').first();
+            const href = decodeBingUrl($a.attr('href'));
+            const title = $a.text().trim();
+            const snippet = $b(el).find('.b_caption p, .b_algoSlug, p').first().text().trim();
 
-        rawTitle = rawTitle
-          .replace(/^[a-zA-Z0-9.-]+\.[a-z]{2,4}(?:\s*›\s*[^›\n\s]+)*\s*›?\s*/i, '')
-          .replace(/\s+/g, ' ')
-          .trim();
-
-        let targetUrl = rawHref;
-        if (rawHref.includes('/RU=')) {
-          const match = rawHref.match(/\/RU=([^/]+)/);
-          if (match) targetUrl = decodeURIComponent(match[1]);
-        }
-
-        const $container = $link.closest('li');
-        const snippet = $container.find('.compText, .lh-16').text().trim();
-
-        const isNotProduct =
-          targetUrl.includes('/c/') ||
-          targetUrl.includes('/search') ||
-          targetUrl.includes('/help') ||
-          targetUrl.includes('/offers') ||
-          targetUrl.includes('/unboxed');
-
-        // Check if it is a Croma product page
-        if (targetUrl.includes('croma.com/') && !isNotProduct) {
-          // If title is generic, extract from URL slug
-          if (
-            !rawTitle ||
-            rawTitle.toLowerCase() === 'croma' ||
-            rawTitle.toLowerCase().startsWith('online shopping') ||
-            rawTitle.length < 8
-          ) {
-            const slugMatch = targetUrl.match(/croma\.com\/([^/]+?)(?:\/p\/|\/|$)/i);
-            if (slugMatch) {
-              rawTitle = decodeURIComponent(slugMatch[1]).replace(/[-_]/g, ' ').trim();
+            if (href && title && href.includes('croma.com')) {
+              const isNotProduct =
+                href.includes('/c/') ||
+                href.includes('/search') ||
+                href.includes('/help') ||
+                href.includes('/offers') ||
+                href.includes('/unboxed') ||
+                href.includes('/lp-');
+              if (!isNotProduct && !candidates.some((c) => c.href === href)) {
+                candidates.push({ href, rawTitle: title, snippet });
+              }
             }
-          }
-
-          if (!candidates.some((c) => c.href === targetUrl)) {
-            candidates.push({ href: targetUrl, rawTitle, snippet });
-          }
+          });
         }
-      });
+      } catch (_bingErr) {
+        // Fall back to Yahoo
+      }
+
+      // 2. Secondary discovery: Yahoo Search fallback
+      if (candidates.length === 0) {
+        try {
+          const searchTerms = `${query} croma`;
+          const encodedQuery = encodeURIComponent(searchTerms);
+
+          const html = await scheduleYahooRequest(async () => {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), Math.min(timeoutMs, 4000));
+
+            try {
+              const res = await fetch(`https://in.search.yahoo.com/search?p=${encodedQuery}`, {
+                headers: {
+                  'User-Agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                  'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
+                  'Sec-Fetch-Dest': 'document',
+                  'Sec-Fetch-Mode': 'navigate',
+                  'Sec-Fetch-Site': 'none',
+                  'Sec-Fetch-User': '?1',
+                  'Upgrade-Insecure-Requests': '1',
+                },
+                signal: controller.signal,
+              });
+
+              if (!res.ok) {
+                throw new Error(`Croma discovery query failed with HTTP ${res.status}`);
+              }
+
+              return await res.text();
+            } finally {
+              clearTimeout(timeout);
+            }
+          });
+
+          const $y = cheerio.load(html);
+          $y('.compTitle a, h3 a, #web a[href*="/RU="]').each((_, el) => {
+            const $link = $y(el);
+            const rawHref = $link.attr('href');
+            if (!rawHref) return;
+
+            let rawTitle = $link.attr('aria-label')?.trim();
+            if (!rawTitle) {
+              const $clone = $link.clone();
+              $clone.find('span').remove();
+              rawTitle = $clone.text().trim();
+            }
+            if (!rawTitle) rawTitle = $link.text().trim();
+            if (!rawTitle || rawTitle === 'Images' || rawTitle === 'Videos') return;
+
+            rawTitle = rawTitle
+              .replace(/^[a-zA-Z0-9.-]+\.[a-z]{2,4}(?:\s*›\s*[^›\n\s]+)*\s*›?\s*/i, '')
+              .replace(/\s+/g, ' ')
+              .trim();
+
+            let targetUrl = rawHref;
+            if (rawHref.includes('/RU=')) {
+              const match = rawHref.match(/\/RU=([^/]+)/);
+              if (match) targetUrl = decodeURIComponent(match[1]);
+            }
+
+            const isNotProduct =
+              targetUrl.includes('/c/') ||
+              targetUrl.includes('/search') ||
+              targetUrl.includes('/help') ||
+              targetUrl.includes('/offers') ||
+              targetUrl.includes('/unboxed');
+
+            if (targetUrl.includes('croma.com/') && !isNotProduct) {
+              if (
+                !rawTitle ||
+                rawTitle.toLowerCase() === 'croma' ||
+                rawTitle.toLowerCase().startsWith('online shopping') ||
+                rawTitle.length < 8
+              ) {
+                const slugMatch = targetUrl.match(/croma\.com\/([^/]+?)(?:\/p\/|\/|$)/i);
+                if (slugMatch) {
+                  rawTitle = decodeURIComponent(slugMatch[1]).replace(/[-_]/g, ' ').trim();
+                }
+              }
+
+              const $container = $link.closest('li');
+              const snippet = $container.find('.compText, .lh-16').text().trim();
+              if (!candidates.some((c) => c.href === targetUrl)) {
+                candidates.push({ href: targetUrl, rawTitle, snippet });
+              }
+            }
+          });
+        } catch (_yahooErr) {
+          // Candidates remain as discovered
+        }
+      }
 
       const listings = [];
       for (const item of candidates.slice(0, 3)) {
@@ -122,8 +182,7 @@ export class CromaProvider extends BaseProvider {
         if (match) price = parsePrice(match[1]);
 
         let extractedListing = null;
-        // Only perform deep page fetch if snippet price could not be determined
-        if (!price) {
+        if (!price && item.href && listings.length === 0) {
           try {
             const extracted = await fetchAndExtractProduct(item.href, { timeoutMs: 2500 });
             if (extracted.success && extracted.listing && extracted.listing.price) {
