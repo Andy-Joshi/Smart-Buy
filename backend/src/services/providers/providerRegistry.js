@@ -35,7 +35,12 @@ class ProviderRegistry {
    * }>}
    */
   async executeSearchAll(query, options = {}) {
-    const promises = this.providers.map(async (provider) => {
+    const promises = this.providers.map(async (provider, index) => {
+      // Slight stagger to prevent concurrent burst hammering against shared discovery endpoints
+      if (index > 0) {
+        await new Promise((resolve) => setTimeout(resolve, index * 60));
+      }
+
       const start = Date.now();
       try {
         const result = await provider.search(query, options);

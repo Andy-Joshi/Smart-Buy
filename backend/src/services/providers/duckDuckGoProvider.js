@@ -15,14 +15,14 @@ export class DuckDuckGoProvider extends BaseProvider {
 
   async search(query, options = {}) {
     const startTime = Date.now();
-    const { timeoutMs = 8000 } = options;
+    const effectiveTimeout = Math.min(options.timeoutMs || 8000, 3500);
 
     try {
       const searchTerms = `${query} price India croma OR flipkart OR amazon OR reliancedigital`;
       const bodyParams = new URLSearchParams({ q: searchTerms });
 
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const timeout = setTimeout(() => controller.abort(), effectiveTimeout);
 
       let res;
       try {
@@ -31,7 +31,9 @@ export class DuckDuckGoProvider extends BaseProvider {
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
             'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
           },
           body: bodyParams.toString(),
           signal: controller.signal,
@@ -40,7 +42,7 @@ export class DuckDuckGoProvider extends BaseProvider {
         clearTimeout(timeout);
       }
 
-      if (!res.ok) {
+      if (!res.ok && res.status !== 202) {
         if (res.status === 429) {
           this.markFailure(new Error('DuckDuckGo rate limit exceeded (429)'), true);
           return {
@@ -55,8 +57,8 @@ export class DuckDuckGoProvider extends BaseProvider {
 
       const html = await res.text();
 
-      // Check for anomaly / captcha modal
-      if (html.includes('anomaly-modal') || html.includes('captcha')) {
+      // Check for anomaly / captcha modal or 202 challenge
+      if (res.status === 202 || html.includes('anomaly-modal') || html.includes('captcha')) {
         this.markFailure(new Error('Bot verification challenge received'), true);
         return {
           results: [],

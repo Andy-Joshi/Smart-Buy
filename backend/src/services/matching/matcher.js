@@ -8,6 +8,23 @@ export const MATCH_STATUS = {
   REJECTED: 'REJECTED',
 };
 
+const COMPATIBLE_CATEGORY_GROUPS = [
+  new Set(['wireless earbuds', 'headphones', 'earphones', 'neckband earphones']),
+  new Set(['laptop', 'notebook']),
+  new Set(['smartphone', 'mobile']),
+];
+
+export function areCategoriesCompatible(catA, catB) {
+  if (!catA || !catB) return true;
+  if (catA === catB) return true;
+  for (const group of COMPATIBLE_CATEGORY_GROUPS) {
+    if (group.has(catA) && group.has(catB)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Tokenize string into meaningful alphanumeric tokens.
  */
@@ -63,6 +80,18 @@ export function evaluateProductMatch(targetIdentity, candidate) {
         status: MATCH_STATUS.REJECTED,
         confidence: 0,
         reason: `Rejected: Brand mismatch (expected ${targetIdentity.brand}, got ${candidateIdentity.brand})`,
+        candidateIdentity,
+      };
+    }
+  }
+
+  // 2b. Category check (incompatible product classes must reject immediately)
+  if (targetIdentity.category && candidateIdentity.category) {
+    if (!areCategoriesCompatible(targetIdentity.category, candidateIdentity.category)) {
+      return {
+        status: MATCH_STATUS.REJECTED,
+        confidence: 0,
+        reason: `Rejected: Category mismatch (expected ${targetIdentity.category}, found ${candidateIdentity.category})`,
         candidateIdentity,
       };
     }
@@ -160,6 +189,30 @@ export function evaluateProductMatch(targetIdentity, candidate) {
 
   if (hasExactModelMatch) {
     score = Math.max(score, 0.85);
+  }
+
+  // Boost for matching brand and category when no model conflict exists
+  const brandMatches =
+    targetHasBrand &&
+    candidateHasBrand &&
+    targetIdentity.brand.toLowerCase() === candidateIdentity.brand.toLowerCase();
+
+  const categoryMatches =
+    targetIdentity.category &&
+    candidateIdentity.category &&
+    (targetIdentity.category === candidateIdentity.category ||
+      areCategoriesCompatible(targetIdentity.category, candidateIdentity.category));
+
+  if (brandMatches) {
+    score += 0.15;
+  }
+  if (categoryMatches) {
+    score += 0.15;
+  }
+
+  // Ensure genuine matching brand + category pairs without conflicting model reach at least POSSIBLE_MATCH
+  if (brandMatches && categoryMatches && !targetHasModel && !candidateHasModel) {
+    score = Math.max(score, 0.50);
   }
 
   // Boost if storage and RAM also match

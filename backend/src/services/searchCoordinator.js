@@ -1,261 +1,125 @@
-
 import crypto from 'node:crypto';
-
 import { providerRegistry } from './providers/providerRegistry.js';
 import { parseProductIdentity } from './matching/normalizer.js';
 import { parseQueryIdentity } from './queryUnderstanding.js';
-
-import {
-  evaluateProductMatch,
-  deduplicateListings,
-  MATCH_STATUS,
-} from './matching/matcher.js';
-
+import { evaluateProductMatch, deduplicateListings, MATCH_STATUS } from './matching/matcher.js';
 import { comparePrices } from './comparison/comparisonEngine.js';
 import { validateSafeUrl } from './security/safeUrlValidator.js';
 import { fetchAndExtractProduct } from './extraction/index.js';
-
-import {
-  createProductListing,
-  VERIFICATION_STATUS,
-} from './extraction/baseExtractor.js';
-
+import { createProductListing, VERIFICATION_STATUS } from './extraction/baseExtractor.js';
 import { generateProductIntelligence } from './productIntelligence.js';
 
-// In-memory diagnostics store: last 100 searches.
+// In-memory diagnostics store (last 100 searches)
 const searchCache = new Map();
-
-function createSearchId() {
-  return `sbl_${crypto.randomBytes(6).toString('hex')}`;
-}
-
-function getProviderDiagnostics(providerStats = []) {
-  const successfulProviders = providerStats.filter(
-    (provider) => provider.resultsCount > 0
-  );
-
-  const noResultProviders = providerStats.filter(
-    (provider) =>
-      provider.resultsCount === 0 &&
-      provider.status === 'Working'
-  );
-
-  const failedProviders = providerStats.filter(
-    (provider) =>
-      provider.resultsCount === 0 &&
-      provider.status !== 'Working'
-  );
-
-  return {
-    successfulProviders: successfulProviders.map((p) => p.name),
-
-    noResultProviders: noResultProviders.map((p) => p.name),
-
-    failedProviders: failedProviders.map((p) => ({
-      name: p.name,
-      status: p.status,
-      error: p.error || 'No results returned',
-    })),
-
-    providerErrors: failedProviders
-      .filter((p) => p.error)
-      .map((p) => `${p.name}: ${p.error}`),
-  };
-}
-
-function cacheSearch(searchId, payload) {
-  searchCache.set(searchId, payload);
-
-  if (searchCache.size > 100) {
-    const oldestKey = searchCache.keys().next().value;
-    searchCache.delete(oldestKey);
-  }
-}
 
 export class SearchCoordinator {
   /**
-   * Mode A: Search by Product Name.
+   * Mode A: Search by Product Name
    */
   async searchByProductName(query) {
-    const searchId = createSearchId();
+    const searchId = `sbl_${crypto.randomBytes(6).toString('hex')}`;
     const startTime = Date.now();
 
-    // 1. Understand the user query.
+    // 1. Query Understanding — structured identity + search aliases
     const queryIdentity = parseQueryIdentity(query);
 
-    // Build the structured target identity.
+    // Also build the classic product identity used by the matcher
     const targetIdentity = parseProductIdentity(query);
 
-    // 2. Discover products across configured providers.
-    const {
-      allListings: rawListings,
-      providerStats = [],
-      queriesDispatched = [],
-    } = await providerRegistry.executeSearchMultiQuery(
-      queryIdentity,
-      { maxAliases: 3 }
-    );
+    // 2. Multi-query discovery across all providers
+    const { allListings: rawListings, providerStats, queriesDispatched } =
+      await providerRegistry.executeSearchMultiQuery(queryIdentity, { maxAliases: 3 });
 
-    // 3. Deep extraction for selected accessible retailers.
+    // 3. Perform deep extraction on up to 3 candidate URLs to upgrade snippet prices
     let deepPagesAttempted = 0;
     let deepPagesSucceeded = 0;
 
     for (const listing of rawListings) {
-      if (
-        listing.verificationStatus !==
-          VERIFICATION_STATUS.UNVERIFIED_SNIPPET ||
-        !listing.url
-      ) {
-        continue;
-      }
-
-      if (deepPagesAttempted >= 2) break;
-
-      if (
-        listing.retailer === 'Croma' ||
-        listing.retailer === 'Flipkart'
-      ) {
-        deepPagesAttempted++;
-
-        try {
-          const pageResult = await fetchAndExtractProduct(
-            listing.url,
-            { timeoutMs: 5000 }
-          );
-
-          if (
-            pageResult.success &&
-            pageResult.listing &&
-            pageResult.listing.price
-          ) {
-            listing.price = pageResult.listing.price;
-
-            listing.originalPrice =
-              pageResult.listing.originalPrice ||
-              listing.originalPrice;
-
-            listing.availability =
-              pageResult.listing.availability;
-
-            listing.verificationStatus =
-              VERIFICATION_STATUS.VERIFIED_PAGE;
-
-            listing.extractionNotes =
-              pageResult.listing.extractionNotes;
-
-            deepPagesSucceeded++;
+      if (listing.verificationStatus === VERIFICATION_STATUS.UNVERIFIED_SNIPPET && listing.url) {
+        if (deepPagesAttempted >= 2) break; // Keep search fast
+        // Only deep-fetch accessible retailers
+        if (listing.retailer === 'Croma' || listing.retailer === 'Flipkart') {
+          deepPagesAttempted++;
+          try {
+            const pageRes = await fetchAndExtractProduct(listing.url, { timeoutMs: 5000 });
+            if (pageRes.success && pageRes.listing && pageRes.listing.price) {
+              listing.price = pageRes.listing.price;
+              listing.originalPrice = pageRes.listing.originalPrice || listing.originalPrice;
+              listing.availability = pageRes.listing.availability;
+              listing.verificationStatus = VERIFICATION_STATUS.VERIFIED_PAGE;
+              listing.extractionNotes = pageRes.listing.extractionNotes;
+              if (pageRes.listing.title) listing.title = pageRes.listing.title;
+              if (pageRes.listing.brand) listing.brand = pageRes.listing.brand;
+              if (pageRes.listing.model) listing.model = pageRes.listing.model;
+              if (pageRes.listing.image) listing.image = pageRes.listing.image;
+              if (pageRes.listing.seller) listing.seller = pageRes.listing.seller;
+              if (pageRes.listing.specifications) listing.specifications = pageRes.listing.specifications;
+              deepPagesSucceeded++;
+            }
+          } catch (_e) {
+            // Keep original snippet if deep fetch fails
           }
-        } catch (_error) {
-          // Retain original discovery data if extraction fails.
         }
       }
     }
 
-    // 4. Deduplicate results.
+    // 4. Deduplicate listings (multi-query produces duplicates)
     const deduplicated = deduplicateListings(rawListings);
+    const duplicatesRemoved = rawListings.length - deduplicated.length;
 
-    const duplicatesRemoved =
-      rawListings.length - deduplicated.length;
-
-    // 5. Evaluate every listing against the target identity.
+    // 5. Product Matching Engine
     const evaluatedListings = deduplicated.map((item) => {
-      const evaluation = evaluateProductMatch(
-        targetIdentity,
-        item
-      );
-
+      const evaluation = evaluateProductMatch(targetIdentity, item);
       return {
         ...item,
         matchEvaluation: evaluation,
       };
     });
 
-    // 6. Separate match classifications.
     const exactMatches = evaluatedListings.filter(
-      (listing) =>
-        listing.matchEvaluation.status ===
-        MATCH_STATUS.EXACT_MATCH
+      (l) => l.matchEvaluation.status === MATCH_STATUS.EXACT_MATCH
     );
-
     const highConfidenceMatches = evaluatedListings.filter(
-      (listing) =>
-        listing.matchEvaluation.status ===
-        MATCH_STATUS.HIGH_CONFIDENCE
+      (l) => l.matchEvaluation.status === MATCH_STATUS.HIGH_CONFIDENCE
     );
-
     const possibleMatches = evaluatedListings.filter(
-      (listing) =>
-        listing.matchEvaluation.status ===
-        MATCH_STATUS.POSSIBLE_MATCH
+      (l) => l.matchEvaluation.status === MATCH_STATUS.POSSIBLE_MATCH
     );
-
     const rejectedListings = evaluatedListings.filter(
-      (listing) =>
-        listing.matchEvaluation.status ===
-        MATCH_STATUS.REJECTED
+      (l) => l.matchEvaluation.status === MATCH_STATUS.REJECTED
     );
 
-    // Only sufficiently validated products enter comparison.
-    const validComparable = [
-      ...exactMatches,
-      ...highConfidenceMatches,
-    ];
+    const validComparable = [...exactMatches, ...highConfidenceMatches];
 
-    // 7. Compare prices.
-    const comparison = comparePrices(
-      targetIdentity,
-      validComparable
-    );
+    // 6. Price Comparison
+    const comparison = comparePrices(targetIdentity, validComparable);
 
-    // 8. Generate product intelligence.
     const baseListing = createProductListing({
       title: targetIdentity.cleanTitle,
       brand: targetIdentity.brand,
       model: targetIdentity.model,
-      variant:
-        targetIdentity.storage ||
-        targetIdentity.ram ||
-        null,
+      variant: targetIdentity.storage || targetIdentity.ram || null,
       source: 'query-understanding',
     });
-
-    const productIntelligence = generateProductIntelligence(
-      baseListing,
-      targetIdentity
-    );
+    const productIntelligence = generateProductIntelligence(baseListing, targetIdentity);
 
     const endTime = Date.now();
     const durationMs = endTime - startTime;
 
-    // 9. Provider diagnostics.
-    const providerDiagnostics = getProviderDiagnostics(
-      providerStats
-    );
-
-    const retailersQueried = [
-      ...new Set(
-        rawListings
-          .map((listing) => listing.retailer)
-          .filter(Boolean)
-      ),
-    ];
-
-    const validPricesExtracted = deduplicated.filter(
-      (listing) =>
-        typeof listing.price === 'number' &&
-        Number.isFinite(listing.price) &&
-        listing.price > 0
-    ).length;
+    // 7. Diagnostics
+    const successfulProviders = providerStats.filter((p) => p.status === 'Working' || p.resultsCount > 0);
+    const failedProviders = providerStats.filter((p) => p.status !== 'Working' && p.resultsCount === 0);
+    const retailersQueried = [...new Set(rawListings.map((l) => l.retailer).filter(Boolean))];
+    const validPricesExtracted = deduplicated.filter((l) => l.price !== null && l.price > 0).length;
 
     const diagnostics = {
       searchId,
       query,
       searchMode: 'PRODUCT_NAME',
-
       startTime: new Date(startTime).toISOString(),
       endTime: new Date(endTime).toISOString(),
       durationMs,
-
+      // V2 additions
       normalizedIdentity: {
         brand: queryIdentity.brand,
         model: queryIdentity.model,
@@ -263,94 +127,66 @@ export class SearchCoordinator {
         isConsumable: queryIdentity.isConsumable,
         quantity: queryIdentity.quantity,
       },
-
       queriesGenerated: queriesDispatched,
-
       providersAttempted: providerStats,
-
-      ...providerDiagnostics,
-
       retailersQueried,
-
+      successfulProviders: successfulProviders.map((p) => p.name),
+      failedProviders: failedProviders.map((p) => ({ name: p.name, error: p.error })),
       listingsDiscovered: rawListings.length,
-
-      listingsAfterDeduplication: deduplicated.length,
-
-      productPagesAttempted: deepPagesAttempted,
-
       productPagesExtracted: deepPagesSucceeded,
-
       validPricesExtracted,
-
       duplicatesRemoved,
-
-      exactMatches: exactMatches.length,
-
-      highConfidenceMatches: highConfidenceMatches.length,
-
-      possibleMatches: possibleMatches.length,
-
-      rejectedListings: rejectedListings.length,
-
       variantMismatchesRejected: rejectedListings.length,
-
-      comparableProducts: validComparable.length,
+      providerErrors: failedProviders.filter((p) => p.error).map((p) => `${p.name}: ${p.error}`),
     };
 
-    // 10. Build response.
     const responsePayload = {
       searchId,
       searchMode: 'PRODUCT_NAME',
       query,
-
       queryIdentity,
       targetIdentity,
-
       productIntelligence,
-
       comparison,
-
       results: {
         exactMatches,
         highConfidenceMatches,
         possibleMatches,
         rejectedListings,
-
         totalDiscovered: rawListings.length,
-
         totalMatched: validComparable.length,
-
         totalRejected: rejectedListings.length,
       },
-
       diagnostics,
     };
 
-    cacheSearch(searchId, responsePayload);
+    searchCache.set(searchId, responsePayload);
+    // Keep cache bounded
+    if (searchCache.size > 100) {
+      const oldestKey = searchCache.keys().next().value;
+      searchCache.delete(oldestKey);
+    }
 
     return responsePayload;
   }
 
   /**
-   * Mode B: Paste Product URL.
+   * Mode B: Paste Product URL
    */
   async searchByProductUrl(rawUrl) {
-    const searchId = createSearchId();
+    const searchId = `sbl_${crypto.randomBytes(6).toString('hex')}`;
     const startTime = Date.now();
 
-    // 1. Validate the supplied URL.
+    // 1. SSRF & Safe URL validation
     const validation = await validateSafeUrl(rawUrl);
-
     if (!validation.valid) {
       const durationMs = Date.now() - startTime;
-
       const errorPayload = {
         searchId,
         searchMode: 'PRODUCT_URL',
         url: rawUrl,
         success: false,
         error: validation.error,
-
         diagnostics: {
           searchId,
           query: rawUrl,
@@ -360,73 +196,49 @@ export class SearchCoordinator {
           reason: validation.error,
         },
       };
-
-      cacheSearch(searchId, errorPayload);
-
+      searchCache.set(searchId, errorPayload);
       return errorPayload;
     }
 
     const targetUrl = rawUrl.trim();
-
     let initialListing = null;
     let initialIdentity = null;
     let extractionError = null;
     let isBlocked = false;
 
-    // 2. Extract the supplied product page.
+    // 2. Fetch and extract starting product
     try {
-      const pageResult = await fetchAndExtractProduct(
-        targetUrl,
-        { timeoutMs: 8000 }
-      );
-
+      const pageResult = await fetchAndExtractProduct(targetUrl, { timeoutMs: 8000 });
       if (pageResult.success && pageResult.listing) {
         initialListing = pageResult.listing;
         initialIdentity = pageResult.identity;
       } else {
-        extractionError =
-          pageResult.error ||
-          'Failed to extract product details from page';
-
+        extractionError = pageResult.error || 'Failed to extract product details from page';
         isBlocked = !!pageResult.blocked;
       }
-    } catch (error) {
-      extractionError =
-        error.message ||
-        'Network error fetching product page';
+    } catch (err) {
+      extractionError = err.message || 'Network error fetching product page';
     }
 
-    // 3. Handle extraction failure.
-    if (!initialListing || !initialIdentity) {
+    // If starting product extraction failed:
+    if (!initialListing) {
       const durationMs = Date.now() - startTime;
-
+      // Deduce suggested search query from URL slug
       let suggestedQuery = null;
-
       try {
         const parsed = new URL(targetUrl);
-
-        const pathSegments = parsed.pathname
-          .split('/')
-          .filter(Boolean);
-
-        const slug = pathSegments.find(
-          (segment) =>
-            segment.length > 5 &&
-            !/^[0-9]+$/.test(segment)
-        );
-
+        const pathSegments = parsed.pathname.split('/').filter(Boolean);
+        // Find longest slug segment
+        const slug = pathSegments.find((s) => s.length > 5 && !s.match(/^[0-9]+$/));
         if (slug) {
           suggestedQuery = slug
             .replace(/[-_]/g, ' ')
-            .replace(
-              /\b(dp|p|itm|product|buy|online)\b/gi,
-              ''
-            )
+            .replace(/\b(dp|p|itm|product|buy|online)\b/gi, '')
             .replace(/\s+/g, ' ')
             .trim();
         }
-      } catch (_error) {
-        // Ignore slug parsing failures.
+      } catch (_e) {
+        // Ignore slug parsing error
       }
 
       const failurePayload = {
@@ -438,172 +250,94 @@ export class SearchCoordinator {
         error: extractionError,
         isBlocked,
         suggestedQuery,
-
         diagnostics: {
           searchId,
           query: targetUrl,
           searchMode: 'PRODUCT_URL',
           durationMs,
-
-          status: isBlocked
-            ? 'BLOCKED_BOT_PROTECTION'
-            : 'EXTRACTION_FAILED',
-
-          providerErrors: [
-            `${validation.retailer}: ${extractionError}`,
-          ],
+          status: isBlocked ? 'BLOCKED_BOT_PROTECTION' : 'EXTRACTION_FAILED',
+          providerErrors: [`${validation.retailer}: ${extractionError}`],
         },
       };
-
-      cacheSearch(searchId, failurePayload);
-
+      searchCache.set(searchId, failurePayload);
       return failurePayload;
     }
 
-    // 4. Generate product intelligence.
-    const productIntelligence = generateProductIntelligence(
-      initialListing,
-      initialIdentity
-    );
+    // 3. Extracted starting product successfully → Product Intelligence & Cross-retailer search
+    const productIntelligence = generateProductIntelligence(initialListing, initialIdentity);
 
-    // 5. Build cross-retailer query.
-    const crossRetailerQuery = [
-      initialIdentity.brand,
-      initialIdentity.model,
-      initialIdentity.category,
-      initialIdentity.storage,
-      initialIdentity.ram,
-    ]
-      .filter(Boolean)
-      .join(' ');
+    // Build a QueryIdentity from the extracted product so Mode B uses identical discovery
+    const crossRetailerQuery = `${initialIdentity.brand || ''} ${initialIdentity.model || initialListing.title} ${initialIdentity.storage || ''}`.trim();
 
-    // 6. Run the same validated product-name pipeline.
-    const crossResults = await this.searchByProductName(
-      crossRetailerQuery
-    );
+    // Run Mode A search using the extracted identity — same pipeline as Mode A
+    const crossResults = await this.searchByProductName(crossRetailerQuery);
 
-    // 7. Preserve the user's supplied starting product.
+    // Merge original pasted listing as the baseline offer
     const originalListingEvaluated = {
       ...initialListing,
-
       isPastedStartingProduct: true,
-
       matchEvaluation: {
         status: MATCH_STATUS.EXACT_MATCH,
         confidence: 1.0,
         reason: 'User-provided starting product URL',
-        candidateIdentity: initialIdentity,
       },
     };
 
-    // 8. Merge only validated comparable offers.
-    const combinedListings = deduplicateListings([
-      originalListingEvaluated,
-      ...crossResults.results.exactMatches,
-      ...crossResults.results.highConfidenceMatches,
-    ]);
+    // Combine original listing with alternative retailer offers (deduplicating against original)
+    const combinedListings = deduplicateListings([originalListingEvaluated, ...crossResults.results.exactMatches, ...crossResults.results.highConfidenceMatches]);
 
     const evaluatedComparable = combinedListings.filter(
-      (listing) =>
-        listing.matchEvaluation &&
-        (
-          listing.matchEvaluation.status ===
-            MATCH_STATUS.EXACT_MATCH ||
-          listing.matchEvaluation.status ===
-            MATCH_STATUS.HIGH_CONFIDENCE
-        )
+      (l) =>
+        l.matchEvaluation &&
+        (l.matchEvaluation.status === MATCH_STATUS.EXACT_MATCH ||
+          l.matchEvaluation.status === MATCH_STATUS.HIGH_CONFIDENCE)
     );
 
-    // 9. Compare prices.
-    const comparison = comparePrices(
-      initialIdentity,
-      evaluatedComparable
-    );
+    const comparison = comparePrices(initialIdentity, evaluatedComparable);
 
     const totalDurationMs = Date.now() - startTime;
 
-    const exactMatchesList = evaluatedComparable.filter(
-      (listing) => !listing.isPastedStartingProduct
-    );
+    const exactMatchesList = evaluatedComparable.filter((l) => !l.isPastedStartingProduct);
 
-    // 10. Build response.
     const responsePayload = {
       searchId,
       searchMode: 'PRODUCT_URL',
       url: targetUrl,
       success: true,
-
       productIntelligence,
-
       startingProduct: originalListingEvaluated,
-
       targetIdentity: initialIdentity,
-
       comparison,
-
       results: {
         startingProduct: originalListingEvaluated,
-
         exactMatches: exactMatchesList,
-
-        possibleMatches:
-          crossResults.results.possibleMatches,
-
-        rejectedListings:
-          crossResults.results.rejectedListings,
-
-        totalDiscovered:
-          crossResults.results.totalDiscovered + 1,
-
+        possibleMatches: crossResults.results.possibleMatches,
+        rejectedListings: crossResults.results.rejectedListings,
+        totalDiscovered: crossResults.results.totalDiscovered + 1,
         totalMatched: evaluatedComparable.length,
-
-        totalRejected:
-          crossResults.results.totalRejected,
+        totalRejected: crossResults.results.totalRejected,
       },
-
       diagnostics: {
         ...crossResults.diagnostics,
-
         searchId,
         query: targetUrl,
         searchMode: 'PRODUCT_URL',
-
         durationMs: totalDurationMs,
-
         originalUrl: targetUrl,
-
         identifiedRetailer: validation.retailer,
-
         extractedProductIdentity: initialIdentity,
-
-        productInformationSources:
-          productIntelligence
-            ? productIntelligence.confidence
-            : null,
-
-        productDescriptionEvidence:
-          productIntelligence
-            ? productIntelligence.description
-            : null,
-
+        productInformationSources: productIntelligence ? productIntelligence.confidence : null,
+        productDescriptionEvidence: productIntelligence ? productIntelligence.description : null,
         exactMatchesCount: exactMatchesList.length,
-
-        possibleMatchesCount:
-          crossResults.results.possibleMatches.length,
-
-        rejectedListingsCount:
-          crossResults.results.rejectedListings.length,
+        possibleMatchesCount: crossResults.results.possibleMatches.length,
+        rejectedListingsCount: crossResults.results.rejectedListings.length,
       },
     };
 
-    cacheSearch(searchId, responsePayload);
-
+    searchCache.set(searchId, responsePayload);
     return responsePayload;
   }
 
-  /**
-   * Retrieve a previous search by ID.
-   */
   getSearch(searchId) {
     return searchCache.get(searchId) || null;
   }

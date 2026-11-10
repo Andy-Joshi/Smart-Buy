@@ -29,7 +29,14 @@ export class AmazonProvider extends BaseProvider {
         res = await fetch(`https://in.search.yahoo.com/search?p=${encodedQuery}`, {
           headers: {
             'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Upgrade-Insecure-Requests': '1',
           },
           signal: controller.signal,
         });
@@ -48,10 +55,24 @@ export class AmazonProvider extends BaseProvider {
       $('h3 a').each((_, el) => {
         const $link = $(el);
         const rawHref = $link.attr('href');
-        let rawTitle = $link.text().trim();
-        if (!rawHref || !rawTitle) return;
+        if (!rawHref) return;
 
-        rawTitle = rawTitle.replace(/^[a-zA-Z0-9.-]+\.[a-z]{2,4}\s*›[^›\n]+\s*/i, '').trim();
+        let rawTitle = $link.attr('aria-label')?.trim();
+        if (!rawTitle) {
+          const $clone = $link.clone();
+          $clone.find('span').remove();
+          rawTitle = $clone.text().trim();
+        }
+        if (!rawTitle) {
+          rawTitle = $link.text().trim();
+        }
+
+        if (!rawTitle || rawTitle === 'Images' || rawTitle === 'Videos') return;
+
+        rawTitle = rawTitle
+          .replace(/^[a-zA-Z0-9.-]+\.[a-z]{2,4}(?:\s*›\s*[^›\n\s]+)*\s*›?\s*/i, '')
+          .replace(/\s+/g, ' ')
+          .trim();
 
         let targetUrl = rawHref;
         if (rawHref.includes('/RU=')) {
