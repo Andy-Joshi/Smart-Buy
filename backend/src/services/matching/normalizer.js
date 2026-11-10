@@ -84,6 +84,23 @@ export function extractBrand(text) {
     }
   }
 
+  // Infer brand from famous product lines when brand name is omitted
+  if (/\b(?:iphone|ipad|macbook|airpods|imac|apple\s*watch)\b/i.test(lower)) {
+    return 'Apple';
+  }
+  if (/\b(?:galaxy\s*s\d+|galaxy\s*z|galaxy\s*fold|galaxy\s*flip|galaxy\s*tab)\b/i.test(lower)) {
+    return 'Samsung';
+  }
+  if (/\b(?:thinkpad|ideapad|legion|yoga)\b/i.test(lower)) {
+    return 'Lenovo';
+  }
+  if (/\b(?:pixel\s*\d+|chromecast)\b/i.test(lower)) {
+    return 'Google';
+  }
+  if (/\b(?:playstation|ps[45]|bravia)\b/i.test(lower)) {
+    return 'Sony';
+  }
+
   return null;
 }
 

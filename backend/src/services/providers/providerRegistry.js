@@ -126,10 +126,11 @@ class ProviderRegistry {
       return true;
     });
 
-    // For each alias, dispatch all providers simultaneously.
-    // We collect per-alias, per-provider results then merge.
+    // For each alias, dispatch providers concurrently.
+    // scheduleYahooRequest ensures that Yahoo requests are safely staggered and never trigger HTTP 500.
+    const aliasesToDispatch = uniqueAliases.slice(0, maxAliases);
     const allRoundResults = await Promise.allSettled(
-      uniqueAliases.map((alias) => this.executeSearchAll(alias, { timeoutMs }))
+      aliasesToDispatch.map((alias) => this.executeSearchAll(alias, { timeoutMs }))
     );
 
     // Merge providerStats: aggregate across rounds, summing resultsCounts, keeping worst status
@@ -165,7 +166,7 @@ class ProviderRegistry {
     return {
       allListings,
       providerStats: [...providerStatsMap.values()],
-      queriesDispatched: uniqueAliases,
+      queriesDispatched: aliasesToDispatch,
     };
   }
 }

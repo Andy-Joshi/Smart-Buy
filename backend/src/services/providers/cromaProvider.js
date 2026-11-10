@@ -3,6 +3,7 @@ import { BaseProvider, PROVIDER_STATUS } from './baseProvider.js';
 import { fetchAndExtractProduct } from '../extraction/index.js';
 import { createProductListing, parsePrice, VERIFICATION_STATUS } from '../extraction/baseExtractor.js';
 import { parseProductIdentity } from '../matching/normalizer.js';
+import { scheduleYahooRequest } from './yahooScheduler.js';
 
 export class CromaProvider extends BaseProvider {
   constructor() {
@@ -18,37 +19,39 @@ export class CromaProvider extends BaseProvider {
     const { timeoutMs = 8000 } = options;
 
     try {
-      const searchTerms = `site:croma.com ${query}`;
+      const searchTerms = `site:croma.com ${query} price`;
       const encodedQuery = encodeURIComponent(searchTerms);
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const html = await scheduleYahooRequest(async () => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-      let res;
-      try {
-        res = await fetch(`https://in.search.yahoo.com/search?p=${encodedQuery}`, {
-          headers: {
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Upgrade-Insecure-Requests': '1',
-          },
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timeout);
-      }
+        try {
+          const res = await fetch(`https://in.search.yahoo.com/search?p=${encodedQuery}`, {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+              'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
+              'Sec-Fetch-Dest': 'document',
+              'Sec-Fetch-Mode': 'navigate',
+              'Sec-Fetch-Site': 'none',
+              'Sec-Fetch-User': '?1',
+              'Upgrade-Insecure-Requests': '1',
+            },
+            signal: controller.signal,
+          });
 
-      if (!res.ok) {
-        throw new Error(`Croma discovery query failed with HTTP ${res.status}`);
-      }
+          if (!res.ok) {
+            throw new Error(`Croma discovery query failed with HTTP ${res.status}`);
+          }
 
-      const html = await res.text();
+          return await res.text();
+        } finally {
+          clearTimeout(timeout);
+        }
+      });
+
       const $ = cheerio.load(html);
       const candidates = [];
 
@@ -85,6 +88,14 @@ export class CromaProvider extends BaseProvider {
 
         // Check if it is a Croma product page (contains /p/)
         if (targetUrl.includes('croma.com/') && targetUrl.includes('/p/')) {
+          // If title is generic, extract from URL slug
+          if (!rawTitle || rawTitle.toLowerCase() === 'croma' || rawTitle.toLowerCase().startsWith('online shopping') || rawTitle.length < 8) {
+            const slugMatch = targetUrl.match(/croma\.com\/([^/]+)\/p\//i);
+            if (slugMatch) {
+              rawTitle = decodeURIComponent(slugMatch[1]).replace(/[-_]/g, ' ').trim();
+            }
+          }
+
           if (!candidates.some((c) => c.href === targetUrl)) {
             candidates.push({ href: targetUrl, rawTitle, snippet });
           }
@@ -107,7 +118,7 @@ export class CromaProvider extends BaseProvider {
 
         if (!extractedFromPage && item.rawTitle) {
           let price = null;
-          const match = (item.snippet + ' ' + item.rawTitle).match(/(?:₹|Rs\.?)\s*([0-9,]+)/i);
+          const match = (item.snippet + ' ' + item.rawTitle).match(/(?:₹|Rs\.?)\s*([0-9,]+(?:\.\d{2})?)/i);
           if (match) price = parsePrice(match[1]);
 
           const identity = parseProductIdentity(item.rawTitle);

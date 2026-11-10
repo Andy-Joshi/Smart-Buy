@@ -132,6 +132,24 @@ function detectBrand(text) {
       return canonical;
     }
   }
+
+  // Infer brand for famous product lines when brand name is omitted
+  if (/\b(?:iphone|ipad|macbook|airpods|imac|apple\s*watch)\b/i.test(lower)) {
+    return 'Apple';
+  }
+  if (/\b(?:galaxy\s*s\d+|galaxy\s*z|galaxy\s*fold|galaxy\s*flip|galaxy\s*tab)\b/i.test(lower)) {
+    return 'Samsung';
+  }
+  if (/\b(?:thinkpad|ideapad|legion|yoga)\b/i.test(lower)) {
+    return 'Lenovo';
+  }
+  if (/\b(?:pixel\s*\d+|chromecast)\b/i.test(lower)) {
+    return 'Google';
+  }
+  if (/\b(?:playstation|ps[45]|bravia)\b/i.test(lower)) {
+    return 'Sony';
+  }
+
   return null;
 }
 
@@ -210,17 +228,34 @@ function extractModelFromRemainder(remainder) {
 
   // A strong model token: contains a digit or is all-caps/mixed alphanumeric
   const hasDigit = (s) => /\d/.test(s);
+  const MODEL_MODIFIERS = new Set([
+    'pro', 'max', 'plus', 'ultra', 'mini', 'lite', 'fe', 'se', 'super', 'ti', '5g', '4g', 'slim', 'air'
+  ]);
 
-  // Keep tokens up to and including the first token with a digit
+  // Keep tokens up to and including the first token with a digit + any immediately following model modifiers
   // e.g. "airdopes 111v2 earbuds" → ["airdopes", "111v2"]
+  // e.g. "iphone 17 pro max 256gb" → ["iphone", "17", "pro", "max"]
   let modelTokens = [];
-  for (const t of tokens) {
-    modelTokens.push(t);
-    if (hasDigit(t)) break;
+  let foundDigit = false;
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    const cleanT = t.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!foundDigit) {
+      modelTokens.push(t);
+      if (hasDigit(t)) {
+        foundDigit = true;
+      }
+    } else {
+      if (MODEL_MODIFIERS.has(cleanT)) {
+        modelTokens.push(t);
+      } else {
+        break;
+      }
+    }
   }
 
   // If nothing has a digit, take the first two non-noise tokens as a family name
-  if (!hasDigit(modelTokens[modelTokens.length - 1])) {
+  if (!hasDigit(modelTokens[modelTokens.length - 1]) && !foundDigit) {
     modelTokens = tokens.slice(0, 2);
   }
 

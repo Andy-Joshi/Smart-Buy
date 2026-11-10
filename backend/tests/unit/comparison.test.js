@@ -45,6 +45,8 @@ describe('Price Comparison Engine', () => {
     expect(comparison.highestComparablePrice).toBe(8990);
     expect(comparison.potentialSavings).toBe(2000);
     expect(comparison.bestOffer.retailer).toBe('Croma');
+    expect(comparison.lowestOffer.retailer).toBe('Croma');
+    expect(comparison.highestOffer.retailer).toBe('Reliance Digital');
     expect(comparison.comparedOffers).toHaveLength(3);
   });
 

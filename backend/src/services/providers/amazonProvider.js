@@ -3,6 +3,7 @@ import { BaseProvider, PROVIDER_STATUS } from './baseProvider.js';
 import { fetchAndExtractProduct } from '../extraction/index.js';
 import { createProductListing, parsePrice, VERIFICATION_STATUS } from '../extraction/baseExtractor.js';
 import { parseProductIdentity } from '../matching/normalizer.js';
+import { scheduleYahooRequest } from './yahooScheduler.js';
 
 export class AmazonProvider extends BaseProvider {
   constructor() {
@@ -18,37 +19,39 @@ export class AmazonProvider extends BaseProvider {
     const { timeoutMs = 8000 } = options;
 
     try {
-      const searchTerms = `site:amazon.in ${query}`;
+      const searchTerms = `site:amazon.in ${query} price`;
       const encodedQuery = encodeURIComponent(searchTerms);
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const html = await scheduleYahooRequest(async () => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-      let res;
-      try {
-        res = await fetch(`https://in.search.yahoo.com/search?p=${encodedQuery}`, {
-          headers: {
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Upgrade-Insecure-Requests': '1',
-          },
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timeout);
-      }
+        try {
+          const res = await fetch(`https://in.search.yahoo.com/search?p=${encodedQuery}`, {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+              'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
+              'Sec-Fetch-Dest': 'document',
+              'Sec-Fetch-Mode': 'navigate',
+              'Sec-Fetch-Site': 'none',
+              'Sec-Fetch-User': '?1',
+              'Upgrade-Insecure-Requests': '1',
+            },
+            signal: controller.signal,
+          });
 
-      if (!res.ok) {
-        throw new Error(`Amazon discovery search failed with HTTP ${res.status}`);
-      }
+          if (!res.ok) {
+            throw new Error(`Amazon discovery search failed with HTTP ${res.status}`);
+          }
 
-      const html = await res.text();
+          return await res.text();
+        } finally {
+          clearTimeout(timeout);
+        }
+      });
+
       const $ = cheerio.load(html);
       const candidates = [];
 
@@ -84,6 +87,14 @@ export class AmazonProvider extends BaseProvider {
         const snippet = $container.find('.compText, .lh-16').text().trim();
 
         if (targetUrl.includes('amazon.in/') && (targetUrl.includes('/dp/') || targetUrl.includes('/gp/product/'))) {
+          // If title is generic (e.g. "Amazon" or very short), recover from URL slug
+          if (!rawTitle || rawTitle.toLowerCase() === 'amazon' || rawTitle.length < 8) {
+            const slugMatch = targetUrl.match(/amazon\.in\/([^/]+)\/dp\//i);
+            if (slugMatch) {
+              rawTitle = decodeURIComponent(slugMatch[1]).replace(/[-_]/g, ' ').trim();
+            }
+          }
+
           candidates.push({ href: targetUrl, rawTitle, snippet });
         }
       });
@@ -105,9 +116,9 @@ export class AmazonProvider extends BaseProvider {
           // Fall back to snippet
         }
 
-        if (!extractedFromPage) {
+        if (!extractedFromPage && item.rawTitle) {
           let price = null;
-          const match = (item.snippet + ' ' + item.rawTitle).match(/(?:₹|Rs\.?)\s*([0-9,]+)/i);
+          const match = (item.snippet + ' ' + item.rawTitle).match(/(?:₹|Rs\.?)\s*([0-9,]+(?:\.\d{2})?)/i);
           if (match) price = parsePrice(match[1]);
 
           const identity = parseProductIdentity(item.rawTitle);

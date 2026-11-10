@@ -8,7 +8,7 @@ import { MATCH_STATUS } from '../matching/matcher.js';
  */
 export function comparePrices(targetIdentity, evaluatedListings = []) {
   // Only compare listings with EXACT_MATCH or HIGH_CONFIDENCE
-  const comparableListings = evaluatedListings.filter(
+  const rawComparableListings = evaluatedListings.filter(
     (item) =>
       item.matchEvaluation &&
       (item.matchEvaluation.status === MATCH_STATUS.EXACT_MATCH ||
@@ -17,7 +17,7 @@ export function comparePrices(targetIdentity, evaluatedListings = []) {
       item.price > 0
   );
 
-  if (comparableListings.length === 0) {
+  if (rawComparableListings.length === 0) {
     return {
       hasComparableOffers: false,
       totalComparable: 0,
@@ -27,9 +27,32 @@ export function comparePrices(targetIdentity, evaluatedListings = []) {
       potentialSavings: null,
       savingsPercentage: null,
       bestOffer: null,
+      lowestOffer: null,
+      highestOffer: null,
       comparedOffers: [],
     };
   }
+
+  // Deduplicate by store to rank distinct retailers (keep lowest price / best verification per retailer)
+  const storeBestOffers = new Map();
+  for (const item of rawComparableListings) {
+    const retailerKey = (item.retailer || 'Unknown').trim().toLowerCase();
+    const existing = storeBestOffers.get(retailerKey);
+    if (!existing) {
+      storeBestOffers.set(retailerKey, item);
+    } else {
+      if (item.price < existing.price) {
+        storeBestOffers.set(retailerKey, item);
+      } else if (item.price === existing.price) {
+        const statusWeight = { VERIFIED_PAGE: 3, VERIFIED_API: 2, UNVERIFIED_SNIPPET: 1 };
+        if ((statusWeight[item.verificationStatus] || 0) > (statusWeight[existing.verificationStatus] || 0)) {
+          storeBestOffers.set(retailerKey, item);
+        }
+      }
+    }
+  }
+
+  const comparableListings = [...storeBestOffers.values()];
 
   // Find lowest verified price (from product page or authorized API)
   const verifiedListings = comparableListings.filter(
@@ -58,6 +81,8 @@ export function comparePrices(targetIdentity, evaluatedListings = []) {
   } else {
     bestOffer = comparableListings.find((l) => l.price === lowestOverallPrice);
   }
+
+  const highestOffer = comparableListings.find((l) => l.price === highestComparablePrice) || bestOffer;
 
   // Calculate price delta for each offer
   const referencePrice = lowestVerifiedPrice || lowestOverallPrice;
@@ -88,6 +113,8 @@ export function comparePrices(targetIdentity, evaluatedListings = []) {
     potentialSavings,
     savingsPercentage,
     bestOffer,
+    lowestOffer: bestOffer,
+    highestOffer,
     comparedOffers,
   };
 }

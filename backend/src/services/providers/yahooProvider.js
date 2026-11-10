@@ -3,6 +3,7 @@ import { BaseProvider, PROVIDER_STATUS } from './baseProvider.js';
 import { detectRetailerFromHostname } from '../security/safeUrlValidator.js';
 import { createProductListing, parsePrice, VERIFICATION_STATUS } from '../extraction/baseExtractor.js';
 import { parseProductIdentity } from '../matching/normalizer.js';
+import { scheduleYahooRequest } from './yahooScheduler.js';
 
 export class YahooPublicProvider extends BaseProvider {
   constructor() {
@@ -21,34 +22,36 @@ export class YahooPublicProvider extends BaseProvider {
       const searchTerms = `${query} price India croma OR flipkart OR amazon OR reliancedigital`;
       const encodedQuery = encodeURIComponent(searchTerms);
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const html = await scheduleYahooRequest(async () => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-      let res;
-      try {
-        res = await fetch(`https://in.search.yahoo.com/search?p=${encodedQuery}`, {
-          headers: {
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Upgrade-Insecure-Requests': '1',
-          },
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timeout);
-      }
+        try {
+          const res = await fetch(`https://in.search.yahoo.com/search?p=${encodedQuery}`, {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+              'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
+              'Sec-Fetch-Dest': 'document',
+              'Sec-Fetch-Mode': 'navigate',
+              'Sec-Fetch-Site': 'none',
+              'Sec-Fetch-User': '?1',
+              'Upgrade-Insecure-Requests': '1',
+            },
+            signal: controller.signal,
+          });
 
-      if (!res.ok) {
-        throw new Error(`Yahoo search responded with HTTP ${res.status}`);
-      }
+          if (!res.ok) {
+            throw new Error(`Yahoo search responded with HTTP ${res.status}`);
+          }
 
-      const html = await res.text();
+          return await res.text();
+        } finally {
+          clearTimeout(timeout);
+        }
+      });
+
       const $ = cheerio.load(html);
       const listings = [];
 
@@ -101,6 +104,26 @@ export class YahooPublicProvider extends BaseProvider {
         // Snippet
         const $container = $link.closest('li');
         const snippet = $container.find('.compText, .lh-16').text().trim();
+
+        // Recover product title from URL slug or snippet if rawTitle is generic
+        const genericNames = ['amazon', 'flipkart', 'croma', 'reliance digital', 'vijay sales'];
+        const isGenericTitle = genericNames.some((g) => rawTitle.toLowerCase() === g || rawTitle.toLowerCase().startsWith('online electronic') || rawTitle.toLowerCase().startsWith('online shopping'));
+        if (isGenericTitle) {
+          try {
+            const parsedUrl = new URL(targetUrl);
+            const pathSegments = parsedUrl.pathname.split('/').filter(Boolean);
+            const slug = pathSegments.find((s) => s.length > 5 && !s.match(/^[0-9]+$/));
+            if (slug) {
+              rawTitle = decodeURIComponent(slug)
+                .replace(/[-_]/g, ' ')
+                .replace(/\b(dp|p|itm|product|buy|online)\b/gi, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+            } else if (snippet && snippet.length > 15) {
+              rawTitle = snippet.split(/[.|•|-]/)[0].trim();
+            }
+          } catch (_e) {}
+        }
 
         // Price parsing from snippet or title
         let price = null;

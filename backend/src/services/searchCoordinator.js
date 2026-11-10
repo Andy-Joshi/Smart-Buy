@@ -220,9 +220,8 @@ export class SearchCoordinator {
       extractionError = err.message || 'Network error fetching product page';
     }
 
-    // If starting product extraction failed:
+    // If starting product extraction failed, recover from URL slug:
     if (!initialListing) {
-      const durationMs = Date.now() - startTime;
       // Deduce suggested search query from URL slug
       let suggestedQuery = null;
       try {
@@ -241,6 +240,97 @@ export class SearchCoordinator {
         // Ignore slug parsing error
       }
 
+      if (suggestedQuery && suggestedQuery.length > 3) {
+        initialIdentity = parseProductIdentity(suggestedQuery);
+        // Build search query from extracted brand, model, storage or slug
+        const crossRetailerQuery = `${initialIdentity.brand || ''} ${initialIdentity.model || suggestedQuery} ${initialIdentity.storage || ''}`.trim();
+        const crossResults = await this.searchByProductName(crossRetailerQuery);
+
+        // Find if any match from the target retailer already exists in discovery
+        const retailerMatch = [...crossResults.results.exactMatches, ...crossResults.results.highConfidenceMatches]
+          .find((l) => (l.retailer || '').toLowerCase() === (validation.retailer || '').toLowerCase());
+
+        initialListing = createProductListing({
+          title: retailerMatch?.title || initialIdentity.cleanTitle || suggestedQuery,
+          brand: initialIdentity.brand || retailerMatch?.brand || null,
+          model: initialIdentity.model || retailerMatch?.model || null,
+          variant: initialIdentity.storage || initialIdentity.ram || retailerMatch?.variant || null,
+          price: retailerMatch?.price || crossResults.comparison?.lowestOverallPrice || null,
+          originalPrice: retailerMatch?.originalPrice || null,
+          currency: 'INR',
+          retailer: validation.retailer,
+          url: targetUrl,
+          verificationStatus: retailerMatch ? retailerMatch.verificationStatus : VERIFICATION_STATUS.UNVERIFIED_SNIPPET,
+          source: `${(validation.retailer || 'direct').toLowerCase()}-url-recovery`,
+          extractionNotes: retailerMatch
+            ? `Extracted via multi-retailer discovery for ${validation.retailer}`
+            : `Identified product from URL slug (${suggestedQuery})`,
+        });
+
+        const productIntelligence = generateProductIntelligence(initialListing, initialIdentity);
+        const originalListingEvaluated = {
+          ...initialListing,
+          isPastedStartingProduct: true,
+          matchEvaluation: {
+            status: MATCH_STATUS.EXACT_MATCH,
+            confidence: 1.0,
+            reason: 'User-provided starting product URL',
+          },
+        };
+
+        const combinedListings = deduplicateListings([
+          originalListingEvaluated,
+          ...crossResults.results.exactMatches,
+          ...crossResults.results.highConfidenceMatches,
+        ]);
+
+        const evaluatedComparable = combinedListings.filter(
+          (l) =>
+            l.matchEvaluation &&
+            (l.matchEvaluation.status === MATCH_STATUS.EXACT_MATCH ||
+              l.matchEvaluation.status === MATCH_STATUS.HIGH_CONFIDENCE)
+        );
+
+        const comparison = comparePrices(initialIdentity, evaluatedComparable);
+        const totalDurationMs = Date.now() - startTime;
+        const exactMatchesList = evaluatedComparable.filter((l) => !l.isPastedStartingProduct);
+
+        const recoveryPayload = {
+          searchId,
+          searchMode: 'PRODUCT_URL',
+          url: targetUrl,
+          success: true,
+          productIntelligence,
+          startingProduct: originalListingEvaluated,
+          targetIdentity: initialIdentity,
+          comparison,
+          results: {
+            startingProduct: originalListingEvaluated,
+            exactMatches: exactMatchesList,
+            possibleMatches: crossResults.results.possibleMatches,
+            rejectedListings: crossResults.results.rejectedListings,
+            totalDiscovered: crossResults.results.totalDiscovered + 1,
+            totalMatched: evaluatedComparable.length,
+            totalRejected: crossResults.results.totalRejected,
+          },
+          diagnostics: {
+            ...crossResults.diagnostics,
+            searchId,
+            query: targetUrl,
+            searchMode: 'PRODUCT_URL',
+            durationMs: totalDurationMs,
+            originalUrl: targetUrl,
+            identifiedRetailer: validation.retailer,
+            extractedProductIdentity: initialIdentity,
+            productInformationSources: productIntelligence ? productIntelligence.confidence : null,
+            productDescriptionEvidence: productIntelligence ? productIntelligence.description : null,
+          },
+        };
+        searchCache.set(searchId, recoveryPayload);
+        return recoveryPayload;
+      }
+
+      const durationMs = Date.now() - startTime;
       const failurePayload = {
         searchId,
         searchMode: 'PRODUCT_URL',
