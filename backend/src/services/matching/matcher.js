@@ -1,3 +1,4 @@
+
 import { parseProductIdentity } from './normalizer.js';
 import { isConsumableProduct, extractQuantity } from '../queryUnderstanding.js';
 
@@ -8,263 +9,343 @@ export const MATCH_STATUS = {
   REJECTED: 'REJECTED',
 };
 
-/**
- * Tokenize string into meaningful alphanumeric tokens.
- */
-function tokenize(str) {
-  if (!str) return new Set();
-  const tokens = str
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, ' ')
-    .split(/\s+/)
-    .filter((t) => t.length > 1);
-  return new Set(tokens);
+const CATEGORY_EQUIVALENTS = {
+  'wireless earbuds': ['wireless earbuds', 'earbuds'],
+  headphones: ['headphones', 'headphone'],
+  earphones: ['earphones', 'earphone'],
+  'neckband earphones': ['neckband earphones', 'neckband'],
+  speaker: ['speaker', 'speakers'],
+  laptop: ['laptop', 'notebook'],
+  smartphone: ['smartphone', 'mobile phone'],
+  tablet: ['tablet'],
+  mouse: ['mouse'],
+  keyboard: ['keyboard'],
+  monitor: ['monitor'],
+  'cooking oil': ['cooking oil'],
+  flour: ['flour'],
+  rice: ['rice'],
+  'personal care': ['personal care'],
+};
+
+function normalizeCategory(category) {
+  if (!category) return null;
+
+  const normalized = category.toLowerCase().trim();
+
+  for (const [canonical, aliases] of Object.entries(CATEGORY_EQUIVALENTS)) {
+    if (aliases.includes(normalized)) return canonical;
+  }
+
+  return normalized;
 }
 
-/**
- * Calculate Jaccard similarity between two token sets.
- */
+function tokenize(str) {
+  if (!str) return new Set();
+
+  return new Set(
+    str.toLowerCase()
+      .replace(/[^a-z0-9]/g, ' ')
+      .split(/\s+/)
+      .filter((token) => token.length > 1)
+  );
+}
+
 function tokenSimilarity(tokensA, tokensB) {
-  if (tokensA.size === 0 || tokensB.size === 0) return 0;
+  if (!tokensA.size || !tokensB.size) return 0;
+
   let intersection = 0;
+
   for (const token of tokensA) {
     if (tokensB.has(token)) intersection++;
   }
+
   const union = new Set([...tokensA, ...tokensB]).size;
-  return union > 0 ? intersection / union : 0;
+
+  return union ? intersection / union : 0;
+}
+
+function rejected(reason, candidateIdentity, confidence = 0) {
+  return {
+    status: MATCH_STATUS.REJECTED,
+    confidence,
+    reason,
+    candidateIdentity,
+  };
 }
 
 /**
- * Compares a candidate product against the target product identity.
- * Returns match status, confidence score (0-1), and an explanatory rejection/matching reason.
- *
- * @param {Object} targetIdentity - Structured identity of target product.
- * @param {Object|string} candidate - Candidate product object or title string.
- * @returns {{ status: string, confidence: number, reason: string, candidateIdentity: Object }}
+ * Compare a discovered product against the requested product.
  */
 export function evaluateProductMatch(targetIdentity, candidate) {
-  const candidateRawTitle = typeof candidate === 'string' ? candidate : candidate.title || '';
+  const candidateRawTitle =
+    typeof candidate === 'string'
+      ? candidate
+      : candidate?.title || '';
+
   const candidateIdentity = parseProductIdentity(candidateRawTitle);
 
-  // 1. Accessory check
+  if (!targetIdentity || !candidateRawTitle) {
+    return rejected(
+      'Rejected: Missing target or candidate product information',
+      candidateIdentity
+    );
+  }
+
+  const targetCategory = normalizeCategory(targetIdentity.category);
+  const candidateCategory = normalizeCategory(candidateIdentity.category);
+
+  // 1. Accessory validation.
   if (!targetIdentity.isAccessory && candidateIdentity.isAccessory) {
-    return {
-      status: MATCH_STATUS.REJECTED,
-      confidence: 0,
-      reason: 'Rejected: Listing is an accessory (case, cover, or part) rather than the primary device',
-      candidateIdentity,
-    };
+    return rejected(
+      'Rejected: Candidate is an accessory rather than the primary product',
+      candidateIdentity
+    );
   }
 
-  // 2. Brand check (if both specify brand, they must match)
+  // 2. Strict category validation.
+  if (targetCategory && candidateCategory) {
+    if (targetCategory !== candidateCategory) {
+      return rejected(
+        `Rejected: Category mismatch (expected ${targetCategory}, found ${candidateCategory})`,
+        candidateIdentity
+      );
+    }
+  }
+
+  // 3. Brand validation.
   if (targetIdentity.brand && candidateIdentity.brand) {
-    if (targetIdentity.brand.toLowerCase() !== candidateIdentity.brand.toLowerCase()) {
-      return {
-        status: MATCH_STATUS.REJECTED,
-        confidence: 0,
-        reason: `Rejected: Brand mismatch (expected ${targetIdentity.brand}, got ${candidateIdentity.brand})`,
-        candidateIdentity,
-      };
+    if (
+      targetIdentity.brand.toLowerCase() !==
+      candidateIdentity.brand.toLowerCase()
+    ) {
+      return rejected(
+        `Rejected: Brand mismatch (expected ${targetIdentity.brand}, found ${candidateIdentity.brand})`,
+        candidateIdentity
+      );
     }
   }
 
-  // 3. Generation check (prioritized: e.g. M4 vs M2, 13th Gen vs 14th Gen)
+  // 4. Generation validation.
   if (targetIdentity.generation && candidateIdentity.generation) {
-    if (targetIdentity.generation !== candidateIdentity.generation) {
-      return {
-        status: MATCH_STATUS.REJECTED,
-        confidence: 0.15,
-        reason: `Rejected: Generation mismatch (expected ${targetIdentity.generation}, found ${candidateIdentity.generation})`,
-        candidateIdentity,
-      };
+    if (
+      targetIdentity.generation.toLowerCase() !==
+      candidateIdentity.generation.toLowerCase()
+    ) {
+      return rejected(
+        `Rejected: Generation mismatch (expected ${targetIdentity.generation}, found ${candidateIdentity.generation})`,
+        candidateIdentity
+      );
     }
   }
 
-  // 4. Model check
-  if (targetIdentity.model && candidateIdentity.model) {
-    const tModel = targetIdentity.model.toUpperCase();
-    const cModel = candidateIdentity.model.toUpperCase();
-
-    if (tModel !== cModel) {
-      // Check if one is a strict superset or equivalent, otherwise reject
-      // e.g. WH-CH720N vs WH-CH520
-      return {
-        status: MATCH_STATUS.REJECTED,
-        confidence: 0.1,
-        reason: `Rejected: Model mismatch (expected ${targetIdentity.model}, found ${candidateIdentity.model})`,
-        candidateIdentity,
-      };
+  // 5. Model validation.
+  if (targetIdentity.model) {
+    if (!candidateIdentity.model) {
+      return rejected(
+        `Rejected: Candidate does not identify the requested model "${targetIdentity.model}"`,
+        candidateIdentity
+      );
     }
-  } else if (targetIdentity.model && !candidateIdentity.model) {
-    // If target has an explicit model code (e.g. WH-CH720N), candidate must mention it
-    const tModel = targetIdentity.model.toUpperCase();
-    const candidateUpper = candidateRawTitle.toUpperCase();
-    if (!candidateUpper.includes(tModel)) {
-      return {
-        status: MATCH_STATUS.REJECTED,
-        confidence: 0.2,
-        reason: `Rejected: Missing target model code "${targetIdentity.model}" in title`,
-        candidateIdentity,
-      };
+
+    if (
+      targetIdentity.model.toUpperCase() !==
+      candidateIdentity.model.toUpperCase()
+    ) {
+      return rejected(
+        `Rejected: Model mismatch (expected ${targetIdentity.model}, found ${candidateIdentity.model})`,
+        candidateIdentity
+      );
     }
   }
 
-  // 5. Storage variant check
+  // 6. Storage validation.
   if (targetIdentity.storage && candidateIdentity.storage) {
     if (targetIdentity.storage !== candidateIdentity.storage) {
-      return {
-        status: MATCH_STATUS.REJECTED,
-        confidence: 0.15,
-        reason: `Rejected: Storage variant mismatch (expected ${targetIdentity.storage}, found ${candidateIdentity.storage})`,
-        candidateIdentity,
-      };
+      return rejected(
+        `Rejected: Storage mismatch (expected ${targetIdentity.storage}, found ${candidateIdentity.storage})`,
+        candidateIdentity
+      );
     }
   }
 
-  // 6. RAM variant check
+  // 7. RAM validation.
   if (targetIdentity.ram && candidateIdentity.ram) {
     if (targetIdentity.ram !== candidateIdentity.ram) {
-      return {
-        status: MATCH_STATUS.REJECTED,
-        confidence: 0.15,
-        reason: `Rejected: RAM variant mismatch (expected ${targetIdentity.ram}, found ${candidateIdentity.ram})`,
-        candidateIdentity,
-      };
+      return rejected(
+        `Rejected: RAM mismatch (expected ${targetIdentity.ram}, found ${candidateIdentity.ram})`,
+        candidateIdentity
+      );
     }
   }
 
-  // 7. Determine what strong identifiers are available
-  const targetHasModel = !!targetIdentity.model;
-  const targetHasBrand = !!targetIdentity.brand;
-  const candidateHasModel = !!candidateIdentity.model;
-  const candidateHasBrand = !!candidateIdentity.brand;
+  // 8. Consumable quantity validation.
+  const targetIsConsumable = isConsumableProduct(
+    targetIdentity.cleanTitle
+  );
 
-  // Check for consumable products (food, personal care etc.)
-  const targetIsConsumable = isConsumableProduct(targetIdentity.cleanTitle);
-
-  // For consumables: extract quantities to compare
   const targetQty = extractQuantity(targetIdentity.cleanTitle);
   const candidateQty = extractQuantity(candidateIdentity.cleanTitle);
 
-  // 8. Token similarity calculation
+  if (targetIsConsumable && targetQty && candidateQty) {
+    if (targetQty !== candidateQty) {
+      return rejected(
+        `Rejected: Quantity mismatch (expected ${targetQty}, found ${candidateQty})`,
+        candidateIdentity
+      );
+    }
+  }
+
+  // 9. Calculate title similarity.
   const targetTokens = tokenize(targetIdentity.cleanTitle);
   const candidateTokens = tokenize(candidateIdentity.cleanTitle);
-  const similarity = tokenSimilarity(targetTokens, candidateTokens);
 
-  // Scoring logic — start from token similarity
-  let score = similarity;
+  let score = tokenSimilarity(targetTokens, candidateTokens);
 
-  // Boost for exact model match (requires both sides to have a model)
   const hasExactModelMatch =
-    targetHasModel && candidateHasModel && targetIdentity.model === candidateIdentity.model;
+    !!targetIdentity.model &&
+    !!candidateIdentity.model &&
+    targetIdentity.model.toUpperCase() ===
+      candidateIdentity.model.toUpperCase();
 
+  const hasBrandMatch =
+    !!targetIdentity.brand &&
+    !!candidateIdentity.brand &&
+    targetIdentity.brand.toLowerCase() ===
+      candidateIdentity.brand.toLowerCase();
+
+  const hasCategoryMatch =
+    !!targetCategory &&
+    !!candidateCategory &&
+    targetCategory === candidateCategory;
+
+  // Evidence-based scoring.
   if (hasExactModelMatch) {
-    score = Math.max(score, 0.85);
+    score = Math.max(score, 0.90);
   }
 
-  // Boost if storage and RAM also match
-  if (targetIdentity.storage && candidateIdentity.storage === targetIdentity.storage) {
-    score += 0.1;
-  }
-  if (targetIdentity.ram && candidateIdentity.ram === targetIdentity.ram) {
-    score += 0.05;
-  }
-  if (targetIdentity.generation && candidateIdentity.generation === targetIdentity.generation) {
-    score += 0.05;
+  if (hasBrandMatch && hasCategoryMatch) {
+    score += 0.08;
   }
 
-  score = Math.min(1.0, Math.round(score * 100) / 100);
+  if (
+    targetIdentity.storage &&
+    candidateIdentity.storage === targetIdentity.storage
+  ) {
+    score += 0.04;
+  }
 
-  // -------------------------------------------------------------------------
-  // Evidence-based caps: prevent awarding EXACT_MATCH without strong proof
-  // -------------------------------------------------------------------------
+  if (
+    targetIdentity.ram &&
+    candidateIdentity.ram === targetIdentity.ram
+  ) {
+    score += 0.03;
+  }
 
-  // Rule A: Both sides missing brand AND model → cap at POSSIBLE_MATCH (0.64 max)
-  const bothLackIdentifiers = !targetHasBrand && !targetHasModel && !candidateHasBrand && !candidateHasModel;
-  if (bothLackIdentifiers) {
+  if (
+    targetIdentity.generation &&
+    candidateIdentity.generation === targetIdentity.generation
+  ) {
+    score += 0.03;
+  }
+
+  score = Math.min(1, Math.round(score * 100) / 100);
+
+  // 10. Evidence-based confidence caps.
+
+  // Missing category evidence cannot reach comparable status.
+  if (targetCategory && !candidateCategory) {
     score = Math.min(score, 0.64);
   }
 
-  // Rule B: Consumable product — require brand match for HIGH_CONFIDENCE or above
-  if (targetIsConsumable) {
-    const brandMatches = targetHasBrand && candidateHasBrand &&
-      targetIdentity.brand.toLowerCase() === candidateIdentity.brand.toLowerCase();
-    const qtyMatches = targetQty && candidateQty && targetQty === candidateQty;
+  // Missing brand evidence cannot reach comparable status.
+  if (targetIdentity.brand && !candidateIdentity.brand) {
+    score = Math.min(score, 0.64);
+  }
 
-    if (!brandMatches) {
-      // Without brand match, consumables can only be POSSIBLE_MATCH at best
+  // Consumables require brand and quantity evidence.
+  if (targetIsConsumable) {
+    if (!hasBrandMatch) {
       score = Math.min(score, 0.64);
-    } else if (!qtyMatches && targetQty) {
-      // Brand matches but quantities differ → HIGH_CONFIDENCE at most
-      score = Math.min(score, 0.74);
     }
-    // If brand + quantity both match → allow HIGH_CONFIDENCE (0.65-0.74) max
-    // (never EXACT_MATCH for consumables unless we have a true product code)
+
+    if (targetQty && !candidateQty) {
+      score = Math.min(score, 0.64);
+    }
+
     if (!hasExactModelMatch) {
       score = Math.min(score, 0.74);
     }
   }
 
-  // Rule C: If target has an explicit model but score hit 0.85+ only via token similarity
-  // (i.e., no actual model-to-model comparison succeeded), cap at HIGH_CONFIDENCE
-  if (!hasExactModelMatch && targetHasModel && score >= 0.85) {
-    score = 0.74;
+  // A model-less candidate cannot become an exact match
+  // when the target has an explicit model.
+  if (targetIdentity.model && !hasExactModelMatch) {
+    score = Math.min(score, 0.74);
   }
 
-  // Rule D: Require at least one strong identifier to reach EXACT_MATCH
-  //   Strong identifiers: model, brand+storage, brand+ram, brand+generation
+  // Exact matches require strong identifying evidence.
   const hasStrongEvidence =
     hasExactModelMatch ||
-    (targetHasBrand && candidateHasBrand &&
-      targetIdentity.storage && candidateIdentity.storage === targetIdentity.storage) ||
-    (targetHasBrand && candidateHasBrand &&
-      targetIdentity.ram && candidateIdentity.ram === targetIdentity.ram) ||
-    (targetHasBrand && candidateHasBrand &&
-      targetIdentity.generation && candidateIdentity.generation === targetIdentity.generation);
+    (
+      hasBrandMatch &&
+      hasCategoryMatch &&
+      (
+        (
+          targetIdentity.storage &&
+          candidateIdentity.storage === targetIdentity.storage
+        ) ||
+        (
+          targetIdentity.ram &&
+          candidateIdentity.ram === targetIdentity.ram
+        ) ||
+        (
+          targetIdentity.generation &&
+          candidateIdentity.generation === targetIdentity.generation
+        )
+      )
+    );
 
-  if (!hasStrongEvidence && score >= 0.85) {
-    // Downgrade to HIGH_CONFIDENCE — token similarity alone is not enough
-    score = 0.74;
+  if (!hasStrongEvidence) {
+    score = Math.min(score, 0.74);
   }
 
-  // Confidence thresholds
-  if (score >= 0.85) {
+  // 11. Final classification.
+  if (score >= 0.85 && hasStrongEvidence) {
     return {
       status: MATCH_STATUS.EXACT_MATCH,
       confidence: score,
-      reason: 'Exact model and variant specification match',
-      candidateIdentity,
-    };
-  } else if (score >= 0.65) {
-    return {
-      status: MATCH_STATUS.HIGH_CONFIDENCE,
-      confidence: score,
-      reason: 'High confidence match with compatible hardware specs',
-      candidateIdentity,
-    };
-  } else if (score >= 0.40) {
-    return {
-      status: MATCH_STATUS.POSSIBLE_MATCH,
-      confidence: score,
-      reason: 'Possible match: brand and core keywords match, but some variant details are unspecified',
-      candidateIdentity,
-    };
-  } else {
-    return {
-      status: MATCH_STATUS.REJECTED,
-      confidence: score,
-      reason: 'Rejected: Low title similarity and missing key identifiers',
+      reason: 'Exact model match with compatible product identity',
       candidateIdentity,
     };
   }
+
+  if (score >= 0.65) {
+    return {
+      status: MATCH_STATUS.HIGH_CONFIDENCE,
+      confidence: score,
+      reason: 'High confidence match with compatible product identity',
+      candidateIdentity,
+    };
+  }
+
+  if (score >= 0.40) {
+    return {
+      status: MATCH_STATUS.POSSIBLE_MATCH,
+      confidence: score,
+      reason: 'Possible match; insufficient evidence for price comparison',
+      candidateIdentity,
+    };
+  }
+
+  return rejected(
+    'Rejected: Insufficient product identity and title similarity',
+    candidateIdentity,
+    score
+  );
 }
 
 /**
- * Deduplicate listings across retailers or multiple results from same retailer.
- * Retains higher-quality verified listings and removes exact URL or title dupes.
- *
- * @param {Array<Object>} listings
- * @returns {Array<Object>} deduplicated listings
+ * Deduplicate listings across retailers and search providers.
  */
 export function deduplicateListings(listings) {
   const statusWeight = {
@@ -280,40 +361,54 @@ export function deduplicateListings(listings) {
   for (const item of listings) {
     if (!item || !item.url) continue;
 
-    // Normalize URL (strip tracking params)
     let cleanUrl;
+
     try {
-      const u = new URL(item.url);
-      cleanUrl = `${u.origin}${u.pathname}`;
-    } catch (_e) {
+      const url = new URL(item.url);
+      cleanUrl = `${url.origin}${url.pathname}`;
+    } catch {
       cleanUrl = item.url;
     }
 
-    const currentWeight = statusWeight[item.verificationStatus] || 0;
+    const currentWeight =
+      statusWeight[item.verificationStatus] || 0;
+
     const existingByUrl = urlMap.get(cleanUrl);
 
     if (existingByUrl) {
-      const existingWeight = statusWeight[existingByUrl.verificationStatus] || 0;
+      const existingWeight =
+        statusWeight[existingByUrl.verificationStatus] || 0;
+
       if (currentWeight > existingWeight) {
-        // Upgrade existing listing
-        const idx = results.indexOf(existingByUrl);
-        if (idx !== -1) results[idx] = item;
+        const index = results.indexOf(existingByUrl);
+
+        if (index !== -1) results[index] = item;
+
         urlMap.set(cleanUrl, item);
       }
+
       continue;
     }
 
-    // Key by retailer + clean title
-    const retailerKey = `${item.retailer || 'Unknown'}_${(item.title || '').slice(0, 40).toLowerCase()}`;
+    const retailerKey =
+      `${item.retailer || 'Unknown'}_${(item.title || '')
+        .slice(0, 40)
+        .toLowerCase()}`;
+
     const existingByKey = retailerKeyMap.get(retailerKey);
 
     if (existingByKey) {
-      const existingWeight = statusWeight[existingByKey.verificationStatus] || 0;
+      const existingWeight =
+        statusWeight[existingByKey.verificationStatus] || 0;
+
       if (currentWeight > existingWeight) {
-        const idx = results.indexOf(existingByKey);
-        if (idx !== -1) results[idx] = item;
+        const index = results.indexOf(existingByKey);
+
+        if (index !== -1) results[index] = item;
+
         retailerKeyMap.set(retailerKey, item);
       }
+
       continue;
     }
 
