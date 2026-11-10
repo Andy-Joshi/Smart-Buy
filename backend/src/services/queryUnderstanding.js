@@ -353,16 +353,17 @@ function buildSearchAliases({ brand, model, category, originalQuery, remainder, 
 
   // Priority 1: If brand + model both detected → use canonical form
   if (brand && model) {
-    // e.g. "boAt Airdopes 111V2"
     // Model is already UPPERCASED; rebuild readable form preserving case
     const readableModel = model; // keep uppercase for model numbers — standard practice
-    aliases.add(`${brand} ${readableModel}`);
 
-    // If model has a space before digits (e.g. "FLIP 6" -> "FLIP6", "S 24" -> "S24"), add compressed variant
+    // If model has a space before digits (e.g. "FLIP 6" -> "FLIP6", "S 24" -> "S24"), prioritize compressed variant
+    // as Indian e-commerce sites (Amazon, Croma, Flipkart) predominantly index product models without spaces
     const compactModel = readableModel.replace(/\b(FLIP|FOLD|[A-Za-z])\s+(\d+)\b/gi, '$1$2');
     if (compactModel !== readableModel) {
       aliases.add(`${brand} ${compactModel}`);
     }
+
+    aliases.add(`${brand} ${readableModel}`);
 
     // If model has no space before digits (e.g. "FLIP6" -> "FLIP 6", "S24" -> "S 24"), add spaced variant
     const spacedModel = readableModel.replace(/\b(FLIP|FOLD|[A-Za-z])(\d+)\b/gi, '$1 $2');

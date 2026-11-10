@@ -28,7 +28,7 @@ export class SearchCoordinator {
 
     // 2. Multi-query discovery across all providers
     const { allListings: rawListings, providerStats, queriesDispatched } =
-      await providerRegistry.executeSearchMultiQuery(queryIdentity, { maxAliases: 3 });
+      await providerRegistry.executeSearchMultiQuery(queryIdentity, { maxAliases: 2, timeoutMs: 12000 });
 
     // 3. Perform deep extraction on up to 3 candidate URLs to upgrade snippet prices
     let deepPagesAttempted = 0;
