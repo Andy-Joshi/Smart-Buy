@@ -3,22 +3,21 @@
  * Normalization utilities for product titles, brands, models, and specifications.
  */
 
-import { detectCategory } from '../queryUnderstanding.js';
-
-// Re-export consumable utilities to keep the public API consistent.
-export {
+import {
+  detectCategory,
   isConsumableProduct,
   extractQuantity,
-  detectCategory,
 } from '../queryUnderstanding.js';
+
+export { detectCategory, isConsumableProduct, extractQuantity };
 
 const KNOWN_BRANDS = [
   'apple', 'sony', 'samsung', 'logitech', 'hp', 'dell',
   'lenovo', 'asus', 'acer', 'oneplus', 'xiaomi', 'redmi',
   'realme', 'motorola', 'google', 'nothing', 'boat', 'noise',
   'boult', 'bose', 'sennheiser', 'jbl', 'lg', 'microsoft',
-  'canon', 'nikon', 'oppo', 'vivo', 'iqoo', 'intel',
-  'amd', 'nvidia',
+  'canon', 'nikon', 'oppo', 'vivo', 'iqoo', 'intel', 'amd',
+  'nvidia',
 ];
 
 const ACCESSORY_KEYWORDS = [
@@ -29,16 +28,13 @@ const ACCESSORY_KEYWORDS = [
   'silicone case',
 ];
 
-/**
- * Remove HTML entities, marketing fluff and redundant store copy.
- */
 export function cleanTitle(title) {
   if (!title || typeof title !== 'string') return '';
 
   let cleaned = title
     .replace(/&amp;/gi, '&')
     .replace(/&quot;/gi, '"')
-    .replace(/&#27;/gi, "'")
+    .replace(/&#x27;/gi, "'")
     .replace(/&#39;/gi, "'")
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
@@ -66,9 +62,6 @@ export function cleanTitle(title) {
   return cleaned;
 }
 
-/**
- * Detect brand name from text.
- */
 export function extractBrand(text) {
   if (!text) return null;
 
@@ -81,16 +74,13 @@ export function extractBrand(text) {
     );
 
     if (regex.test(lower)) {
-      const canonicalNames = {
-        hp: 'HP',
-        lg: 'LG',
-        jbl: 'JBL',
-        amd: 'AMD',
-        boat: 'boAt',
-      };
+      if (brand === 'hp') return 'HP';
+      if (brand === 'lg') return 'LG';
+      if (brand === 'jbl') return 'JBL';
+      if (brand === 'amd') return 'AMD';
+      if (brand === 'boat') return 'boAt';
 
-      return canonicalNames[brand] ||
-        brand.charAt(0).toUpperCase() + brand.slice(1);
+      return brand.charAt(0).toUpperCase() + brand.slice(1);
     }
   }
 
@@ -98,19 +88,42 @@ export function extractBrand(text) {
 }
 
 /**
- * Extract model numbers or product family designations.
+ * Extract only identifiable model families or model numbers.
+ * Generic descriptive phrases are deliberately NOT model identifiers.
  */
 export function extractModel(text, brandHint = null) {
   if (!text) return null;
 
   const patterns = [
+    // Sony headphones and earbuds
     /\b(W[HF]-[A-Z0-9]{3,7})\b/i,
+
+    // Samsung Galaxy models
     /\b(Galaxy\s+(?:S\d{2}[A-Za-z+]*|Z\s+(?:Fold|Flip)\s*\d+|A\d{2}[A-Za-z+]*|M\d{2}[A-Za-z+]*))\b/i,
     /\b(S\d{2}(?:\s*(?:Ultra|Plus|\+|FE))?)\b/i,
+
+    // Apple products
     /\b(MacBook\s+(?:Air|Pro))\b/i,
     /\b(iPhone\s+\d{1,2}(?:\s+(?:Pro\s+Max|Pro|Plus|Mini))?)\b/i,
+
+    // Apple Silicon identifiers are handled separately by generation.
+
+    // Logitech
     /\b(MX\s+Master\s+3S|MX\s+Master\s+3|MX\s+Keys\s+S|MX\s+Keys|MX\s+Anywhere\s+3S|G502\s*X)\b/i,
+
+    // HP
     /\b(Victus\s+\d{2}|Pavilion\s+\d{2}|Envy\s+x360|Omen\s+\d{2})\b/i,
+
+    // Lenovo identifiable families with model numbers
+    /\b(ThinkPad\s+[A-Z]\d{1,2})\b/i,
+    /\b(IdeaPad\s+[A-Z]?\d{1,2})\b/i,
+    /\b(Legion\s+[357]\s*(?:Pro)?)\b/i,
+    /\b(Yoga\s+\d{1,2})\b/i,
+
+// boAt Airdopes model identifiers
+/\b(Airdopes\s+\d{2,4}[A-Za-z0-9]*)\b/i,
+
+    // General alphanumeric model codes
     /\b([A-Z]{2,4}-[A-Z0-9]{3,8})\b/i,
   ];
 
@@ -118,39 +131,19 @@ export function extractModel(text, brandHint = null) {
     const match = text.match(regex);
 
     if (match) {
-      return match[1].replace(/\s+/g, ' ').trim().toUpperCase();
+      return match[1]
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toUpperCase();
     }
   }
 
-  if (brandHint) {
-    const escapedBrand = brandHint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const brandRegex = new RegExp(
-      `${escapedBrand}\\s+([A-Za-z0-9+-]+(?:\\s+[A-Za-z0-9+-]+)?)`,
-      'i'
-    );
-
-    const brandMatch = text.match(brandRegex);
-
-    if (brandMatch) {
-      const candidate = brandMatch[1].trim();
-
-      const excludedWords = [
-        'price', 'online', 'buy', 'with',
-        'bluetooth', 'wireless', 'india',
-      ];
-
-      if (!excludedWords.includes(candidate.toLowerCase())) {
-        return candidate.toUpperCase();
-      }
-    }
-  }
+  // No generic fallback. Words such as "Wireless Keyboard",
+  // "Smartchoice Keyboard" and "Idea Tab" are not model numbers.
 
   return null;
 }
 
-/**
- * Extract storage capacity in standardized GB format.
- */
 export function extractStorage(text) {
   if (!text) return null;
 
@@ -169,9 +162,6 @@ export function extractStorage(text) {
   return null;
 }
 
-/**
- * Extract RAM capacity in standardized GB format.
- */
 export function extractRam(text) {
   if (!text) return null;
 
@@ -190,9 +180,6 @@ export function extractRam(text) {
   return null;
 }
 
-/**
- * Extract generation.
- */
 export function extractGeneration(text) {
   if (!text) return null;
 
@@ -221,20 +208,24 @@ export function extractGeneration(text) {
   return null;
 }
 
-/**
- * Detect accessories rather than primary devices.
- */
 export function isAccessoryItem(text) {
   if (!text) return false;
 
   const lower = text.toLowerCase();
 
-  return ACCESSORY_KEYWORDS.some((keyword) => {
+  for (const keyword of ACCESSORY_KEYWORDS) {
     const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`(?:^|\\s)${escaped}(?:$|\\s)`, 'i');
+    const regex = new RegExp(
+      `(?:^|\\s)${escaped}(?:$|\\s)`,
+      'i'
+    );
 
-    return regex.test(lower);
-  });
+    if (regex.test(lower)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -244,24 +235,24 @@ export function parseProductIdentity(rawText) {
   const clean = cleanTitle(rawText);
 
   const brand = extractBrand(clean);
+  const category = detectCategory(clean);
   const model = extractModel(clean, brand);
   const storage = extractStorage(clean);
   const ram = extractRam(clean);
   const generation = extractGeneration(clean);
   const isAccessory = isAccessoryItem(clean);
 
-  // New: detect and attach product category.
-  const category = detectCategory(clean);
-
   return {
     raw: rawText,
     cleanTitle: clean,
     brand,
     model,
+    category,
     storage,
     ram,
     generation,
     isAccessory,
-    category,
   };
 }
+ 
+ 
