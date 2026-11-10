@@ -35,13 +35,13 @@ export class SearchCoordinator {
     let deepPagesSucceeded = 0;
 
     for (const listing of rawListings) {
-      if (listing.verificationStatus === VERIFICATION_STATUS.UNVERIFIED_SNIPPET && listing.url) {
+      if (listing.verificationStatus === VERIFICATION_STATUS.UNVERIFIED_SNIPPET && listing.url && !listing.price) {
         if (deepPagesAttempted >= 2) break; // Keep search fast
         // Only deep-fetch accessible retailers
         if (listing.retailer === 'Croma' || listing.retailer === 'Flipkart') {
           deepPagesAttempted++;
           try {
-            const pageRes = await fetchAndExtractProduct(listing.url, { timeoutMs: 5000 });
+            const pageRes = await fetchAndExtractProduct(listing.url, { timeoutMs: 3000 });
             if (pageRes.success && pageRes.listing && pageRes.listing.price) {
               listing.price = pageRes.listing.price;
               listing.originalPrice = pageRes.listing.originalPrice || listing.originalPrice;

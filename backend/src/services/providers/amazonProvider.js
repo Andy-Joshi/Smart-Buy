@@ -100,59 +100,38 @@ export class AmazonProvider extends BaseProvider {
       });
 
       const listings = [];
-      let encounteredBlock = false;
+      for (const item of candidates.slice(0, 3)) {
+        if (!item.rawTitle) continue;
+        let price = null;
+        const match = (item.snippet + ' ' + item.rawTitle).match(/(?:₹|Rs\.?)\s*([0-9,]+(?:\.\d{2})?)/i);
+        if (match) price = parsePrice(match[1]);
 
-      for (const item of candidates.slice(0, 2)) {
-        let extractedFromPage = false;
-        try {
-          const pageRes = await fetchAndExtractProduct(item.href, { timeoutMs: 5000 });
-          if (pageRes.success && pageRes.listing && pageRes.listing.price) {
-            listings.push(pageRes.listing);
-            extractedFromPage = true;
-          } else if (pageRes.blocked) {
-            encounteredBlock = true;
-          }
-        } catch (_e) {
-          // Fall back to snippet
-        }
-
-        if (!extractedFromPage && item.rawTitle) {
-          let price = null;
-          const match = (item.snippet + ' ' + item.rawTitle).match(/(?:₹|Rs\.?)\s*([0-9,]+(?:\.\d{2})?)/i);
-          if (match) price = parsePrice(match[1]);
-
-          const identity = parseProductIdentity(item.rawTitle);
-          listings.push(
-            createProductListing({
-              title: item.rawTitle,
-              brand: identity.brand,
-              model: identity.model,
-              variant: identity.storage || identity.ram || null,
-              price,
-              currency: 'INR',
-              retailer: 'Amazon India',
-              url: item.href,
-              verificationStatus: VERIFICATION_STATUS.UNVERIFIED_SNIPPET,
-              source: 'amazon-discovery',
-              extractionNotes: price
-                ? `Discovered on Amazon India; price extracted from search snippet (${price})`
-                : 'Discovered on Amazon India (Direct page verification restricted by Amazon anti-bot)',
-            })
-          );
-        }
+        const identity = parseProductIdentity(item.rawTitle);
+        listings.push(
+          createProductListing({
+            title: item.rawTitle,
+            brand: identity.brand,
+            model: identity.model,
+            variant: identity.storage || identity.ram || null,
+            price,
+            currency: 'INR',
+            retailer: 'Amazon India',
+            url: item.href,
+            verificationStatus: VERIFICATION_STATUS.UNVERIFIED_SNIPPET,
+            source: 'amazon-discovery',
+            extractionNotes: price
+              ? `Discovered on Amazon India; price extracted from search snippet (${price})`
+              : 'Discovered on Amazon India (Direct page verification restricted by Amazon anti-bot)',
+          })
+        );
       }
 
-      if (encounteredBlock) {
-        this.markFailure(new Error('Amazon anti-bot challenge (Robot Check) encountered'), true);
-      } else {
-        this.markSuccess();
-      }
-
+      this.markSuccess();
       return {
         results: listings,
         durationMs: Date.now() - startTime,
-        error: encounteredBlock ? 'Direct page scraping restricted by Amazon anti-bot' : null,
-        status: encounteredBlock ? PROVIDER_STATUS.RATE_LIMITED : PROVIDER_STATUS.WORKING,
+        error: null,
+        status: PROVIDER_STATUS.WORKING,
       };
     } catch (err) {
       this.markFailure(err);

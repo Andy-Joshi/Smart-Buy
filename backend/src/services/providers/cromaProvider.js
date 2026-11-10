@@ -103,24 +103,28 @@ export class CromaProvider extends BaseProvider {
       });
 
       const listings = [];
-      // Fetch up to 2 distinct product pages to extract verified product details
-      for (const item of candidates.slice(0, 2)) {
-        let extractedFromPage = false;
-        try {
-          const extracted = await fetchAndExtractProduct(item.href, { timeoutMs: 5000 });
-          if (extracted.success && extracted.listing && extracted.listing.price) {
-            listings.push(extracted.listing);
-            extractedFromPage = true;
+      for (const item of candidates.slice(0, 3)) {
+        if (!item.rawTitle) continue;
+        let price = null;
+        const match = (item.snippet + ' ' + item.rawTitle).match(/(?:₹|Rs\.?)\s*([0-9,]+(?:\.\d{2})?)/i);
+        if (match) price = parsePrice(match[1]);
+
+        let extractedListing = null;
+        // Only perform deep page fetch if snippet price could not be determined
+        if (!price) {
+          try {
+            const extracted = await fetchAndExtractProduct(item.href, { timeoutMs: 2500 });
+            if (extracted.success && extracted.listing && extracted.listing.price) {
+              extractedListing = extracted.listing;
+            }
+          } catch (_fetchErr) {
+            // Keep snippet fallback
           }
-        } catch (_fetchErr) {
-          // If individual page fetch fails, fall back to snippet
         }
 
-        if (!extractedFromPage && item.rawTitle) {
-          let price = null;
-          const match = (item.snippet + ' ' + item.rawTitle).match(/(?:₹|Rs\.?)\s*([0-9,]+(?:\.\d{2})?)/i);
-          if (match) price = parsePrice(match[1]);
-
+        if (extractedListing) {
+          listings.push(extractedListing);
+        } else {
           const identity = parseProductIdentity(item.rawTitle);
           listings.push(
             createProductListing({
