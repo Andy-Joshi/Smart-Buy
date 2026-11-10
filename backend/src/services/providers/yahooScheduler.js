@@ -8,7 +8,7 @@
 
 let queue = Promise.resolve();
 
-export function scheduleYahooRequest(fn, delayMs = 280) {
+export function scheduleYahooRequest(fn, delayMs = 450) {
   const result = queue.then(async () => {
     if (delayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -22,7 +22,7 @@ export function scheduleYahooRequest(fn, delayMs = 280) {
         const isTransient =
           err.message && (err.message.includes('500') || err.message.includes('429'));
         if (isTransient && attempt < 2) {
-          const waitTime = (attempt + 1) * 500;
+          const waitTime = (attempt + 1) * 1200;
           await new Promise((resolve) => setTimeout(resolve, waitTime));
           continue;
         }

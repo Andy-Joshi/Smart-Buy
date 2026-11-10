@@ -38,7 +38,11 @@ export class SearchCoordinator {
       if (listing.verificationStatus === VERIFICATION_STATUS.UNVERIFIED_SNIPPET && listing.url && !listing.price) {
         if (deepPagesAttempted >= 2) break; // Keep search fast
         // Only deep-fetch accessible retailers
-        if (listing.retailer === 'Croma' || listing.retailer === 'Flipkart') {
+        if (
+          listing.retailer === 'Croma' ||
+          listing.retailer === 'Flipkart' ||
+          listing.retailer === 'Amazon India'
+        ) {
           deepPagesAttempted++;
           try {
             const pageRes = await fetchAndExtractProduct(listing.url, { timeoutMs: 3000 });
